@@ -1,23 +1,26 @@
 import { supabase } from "./supabaseClient";
 
-export async function fetchTeams() {
+export type Team = { id: string; name: string };
+export type Person = { id: string; name: string; daily_capacity_hours: number };
+
+export async function fetchTeams(): Promise<Team[]> {
   const { data, error } = await supabase.from("teams").select("id,name").order("name");
   if (error) throw error;
   return data ?? [];
 }
 
-export async function fetchPeopleForTeam(teamId: string) {
+export async function fetchPeopleForTeam(teamId: string): Promise<Person[]> {
   const { data, error } = await supabase
     .from("team_members")
     .select("people(id,name,daily_capacity_hours)")
     .eq("team_id", teamId);
 
   if (error) throw error;
-
   return (data ?? []).map((r: any) => r.people).filter(Boolean);
 }
 
 export async function fetchTasksForTeam(teamId: string, windowStartISO: string, windowEndISO: string) {
+  // Preferred: tasks_with_assignees view
   const { data, error } = await supabase
     .from("tasks_with_assignees")
     .select("*")
@@ -50,14 +53,14 @@ export async function createTask(payload: {
       end_at: payload.end_at,
       task_size: payload.task_size,
       status: payload.status,
-      notes: payload.notes ?? null,
+      notes: payload.notes ?? null
     }])
     .select("*")
     .single();
 
   if (error) throw error;
 
-  if (payload.assigneeIds.length) {
+  if (payload.assigneeIds?.length) {
     const { error: aErr } = await supabase
       .from("task_assignees")
       .insert(payload.assigneeIds.map(pid => ({ task_id: task.id, person_id: pid })));
@@ -65,6 +68,41 @@ export async function createTask(payload: {
   }
 
   return task;
+}
+
+export async function updateTask(taskId: string, payload: {
+  title: string;
+  start_at: string;
+  end_at: string;
+  task_size: string;
+  status: string;
+  notes?: string;
+  assigneeIds: string[];
+}) {
+  const { error } = await supabase
+    .from("tasks")
+    .update({
+      title: payload.title,
+      start_at: payload.start_at,
+      end_at: payload.end_at,
+      task_size: payload.task_size,
+      status: payload.status,
+      notes: payload.notes ?? null
+    })
+    .eq("id", taskId);
+
+  if (error) throw error;
+
+  // Replace assignees
+  const { error: delErr } = await supabase.from("task_assignees").delete().eq("task_id", taskId);
+  if (delErr) throw delErr;
+
+  if (payload.assigneeIds?.length) {
+    const { error: insErr } = await supabase
+      .from("task_assignees")
+      .insert(payload.assigneeIds.map(pid => ({ task_id: taskId, person_id: pid })));
+    if (insErr) throw insErr;
+  }
 }
 
 export async function deleteTask(taskId: string) {
@@ -79,5 +117,19 @@ export async function getAvailability(teamId: string, windowStartISO: string, wi
     p_window_end: windowEndISO
   });
   if (error) throw error;
+  return data ?? [];
+}
+
+/**
+ * Optional conflict check (requires function get_person_tasks_in_window to exist).
+ * If it doesn't exist, we return null and the UI just won't show conflict warnings.
+ */
+export async function getPersonTasksInWindow(personId: string, windowStartISO: string, windowEndISO: string) {
+  const { data, error } = await supabase.rpc("get_person_tasks_in_window", {
+    p_person_id: personId,
+    p_window_start: windowStartISO,
+    p_window_end: windowEndISO
+  });
+  if (error) return null; // graceful fallback
   return data ?? [];
 }

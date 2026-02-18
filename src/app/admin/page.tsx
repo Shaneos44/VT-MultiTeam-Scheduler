@@ -1,14 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  addDays,
-  addMonths,
-  format,
-  startOfMonth,
-  startOfWeek,
-  subMonths
-} from "date-fns";
+import { addDays, addMonths, format, startOfMonth, startOfWeek, subMonths } from "date-fns";
 
 import {
   addTeamMember,
@@ -18,7 +11,6 @@ import {
   deleteTeam,
   fetchAllMembership,
   fetchAllPeople,
-  fetchPeopleForTeam,
   fetchTasksForTeams,
   fetchTeams,
   removeTeamMember,
@@ -33,8 +25,24 @@ type Task = any;
 type AdminTab = "calendar" | "people" | "teams" | "membership";
 type ViewMode = "week" | "month";
 
-function iso(d: Date) { return d.toISOString(); }
-function sameDay(a: Date, b: Date) { return a.toDateString() === b.toDateString(); }
+function iso(d: Date) {
+  return d.toISOString();
+}
+
+function dayWindowLocal(day: Date) {
+  const start = new Date(day);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(day);
+  end.setHours(23, 59, 59, 999);
+  return { start, end };
+}
+
+function overlapsDay(taskStartISO: string, taskEndISO: string, day: Date) {
+  const ts = new Date(taskStartISO);
+  const te = new Date(taskEndISO);
+  const { start: ds, end: de } = dayWindowLocal(day);
+  return ts < de && te > ds;
+}
 
 export default function AdminPage() {
   const [tab, setTab] = useState<AdminTab>("calendar");
@@ -47,7 +55,6 @@ export default function AdminPage() {
   const [banner, setBanner] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // Calendar controls
   const [viewMode, setViewMode] = useState<ViewMode>("week");
   const [weekStart, setWeekStart] = useState<Date>(() => startOfWeek(new Date(), { weekStartsOn: 1 }));
   const [monthAnchor, setMonthAnchor] = useState<Date>(() => startOfMonth(new Date()));
@@ -68,11 +75,10 @@ export default function AdminPage() {
     return m;
   }, [teams]);
 
-  // Forms: People
+  // Forms
   const [pName, setPName] = useState("");
   const [pCap, setPCap] = useState(8);
 
-  // Forms: Teams
   const [tName, setTName] = useState("");
 
   // Editing
@@ -125,7 +131,6 @@ export default function AdminPage() {
 
   async function toggleMember(teamId: string, personId: string, want: boolean) {
     setBanner("");
-    // optimistic
     setMembership(prev => {
       if (want) return [...prev, { team_id: teamId, person_id: personId }];
       return prev.filter(m => !(m.team_id === teamId && m.person_id === personId));
@@ -135,18 +140,19 @@ export default function AdminPage() {
       if (want) await addTeamMember(teamId, personId);
       else await removeTeamMember(teamId, personId);
     } catch (e: any) {
-      // revert
       await reloadBase();
       setBanner(e?.message ?? String(e));
     }
   }
 
-  function tasksForDay(d: Date) {
-    return (tasks ?? []).filter(t => sameDay(new Date(t.start_at), d));
+  function tasksForDay(day: Date) {
+    return (tasks ?? [])
+      .filter(t => overlapsDay(t.start_at, t.end_at, day))
+      .sort((a, b) => +new Date(a.start_at) - +new Date(b.start_at));
   }
 
-  function groupedTasksForDay(d: Date) {
-    const list = tasksForDay(d);
+  function groupedTasksForDay(day: Date) {
+    const list = tasksForDay(day);
     const groups: Record<string, Task[]> = {};
     for (const t of list) {
       const tid = t.team_id ?? "unknown";
@@ -269,7 +275,15 @@ export default function AdminPage() {
           <h1>Admin</h1>
           <div className="sub">
             Manage people, teams, multi-team assignments •{" "}
-            <a href="../">Back to scheduler</a>
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                window.location.href = "../?v=" + Date.now();
+              }}
+            >
+              Back to scheduler
+            </a>
           </div>
         </div>
         <div className="nav">
@@ -326,7 +340,7 @@ export default function AdminPage() {
                             <div key={t.id} className="task" style={{ cursor: "default" }}>
                               <div className="taskTitle">{t.title}</div>
                               <div className="taskMeta">
-                                {format(new Date(t.start_at), "HH:mm")}–{format(new Date(t.end_at), "HH:mm")} • {t.status}
+                                {format(new Date(t.start_at), "dd MMM HH:mm")} → {format(new Date(t.end_at), "dd MMM HH:mm")} • {t.status}
                               </div>
                             </div>
                           ))}
@@ -366,12 +380,13 @@ export default function AdminPage() {
                             {g.tasks.slice(0, maxPerTeam).map(t => (
                               <div key={t.id} className="task" style={{ padding: 8, cursor: "default" }}>
                                 <div className="taskTitle">{t.title}</div>
-                                <div className="taskMeta">{format(new Date(t.start_at), "HH:mm")} • {t.status}</div>
+                                <div className="taskMeta">{format(new Date(t.start_at), "dd MMM")} → {format(new Date(t.end_at), "dd MMM")}</div>
                               </div>
                             ))}
                             {g.tasks.length > maxPerTeam && <div className="small">+{g.tasks.length - maxPerTeam}</div>}
                           </div>
                         ))}
+
                         {groups.length > maxTeams && <div className="small">+{groups.length - maxTeams} teams</div>}
                         {total === 0 && <div className="small">—</div>}
                       </div>
@@ -386,9 +401,7 @@ export default function AdminPage() {
 
       {tab === "people" && (
         <div className="card" style={{ marginTop: 14 }}>
-          <div className="card-header">
-            <h2>People</h2>
-          </div>
+          <div className="card-header"><h2>People</h2></div>
           <div className="card-body">
             <div className="row">
               <label className="label" style={{ minWidth: 320 }}>
@@ -441,9 +454,7 @@ export default function AdminPage() {
 
       {tab === "teams" && (
         <div className="card" style={{ marginTop: 14 }}>
-          <div className="card-header">
-            <h2>Teams</h2>
-          </div>
+          <div className="card-header"><h2>Teams</h2></div>
           <div className="card-body">
             <div className="row">
               <label className="label" style={{ minWidth: 360 }}>
@@ -516,15 +527,7 @@ export default function AdminPage() {
                       {teams.map(t => {
                         const checked = isMember(t.id, p.id);
                         return (
-                          <td
-                            key={t.id}
-                            style={{
-                              padding: "10px",
-                              border: "1px solid rgba(255,255,255,0.10)",
-                              borderLeft: "none",
-                              textAlign: "center"
-                            }}
-                          >
+                          <td key={t.id} style={{ padding: "10px", border: "1px solid rgba(255,255,255,0.10)", borderLeft: "none", textAlign: "center" }}>
                             <input
                               type="checkbox"
                               checked={checked}
@@ -539,7 +542,7 @@ export default function AdminPage() {
               </table>
             )}
             <div className="small" style={{ marginTop: 10 }}>
-              If ticking fails, Supabase RLS is blocking inserts/deletes on <code>team_members</code> — the error will show in the banner.
+              If ticking fails, Supabase RLS is blocking inserts/deletes on <code>team_members</code>.
             </div>
           </div>
         </div>

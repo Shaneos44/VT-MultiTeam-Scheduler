@@ -8,30 +8,35 @@ import {
   format,
   startOfMonth,
   startOfWeek,
-  subMonths
+  subMonths,
 } from "date-fns";
 
 import {
   createTask,
   deleteTask,
+  fetchAllPeople,
   fetchPeopleForTeam,
   fetchTasksForTeam,
+  fetchTasksForTeams,
   fetchTeams,
   getAvailability,
   getPersonTasksInWindow,
-  updateTask
+  updateTask,
 } from "../lib/api";
 
 type Team = { id: string; name: string };
 type Person = { id: string; name: string; daily_capacity_hours: number };
 type Task = any;
 
+type ViewMode = "week" | "month";
+type ScopeMode = "team" | "all";
+
 const TASK_SIZES = ["hourly", "half_day", "full_day", "custom"] as const;
 const STATUSES = ["planned", "in_progress", "done", "cancelled"] as const;
 
-type ViewMode = "week" | "month";
-
-function iso(d: Date) { return d.toISOString(); }
+function iso(d: Date) {
+  return d.toISOString();
+}
 
 // datetime-local helpers
 function dtLocalToIso(v: string) {
@@ -53,23 +58,31 @@ function sameDay(a: Date, b: Date) {
   return a.toDateString() === b.toDateString();
 }
 
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
-
 export default function Page() {
   // Core data
   const [teams, setTeams] = useState<Team[]>([]);
   const [teamId, setTeamId] = useState<string>("");
 
-  const [people, setPeople] = useState<Person[]>([]);
+  // Scope + view
+  const [scope, setScope] = useState<ScopeMode>("team");
+  const [viewMode, setViewMode] = useState<ViewMode>("week");
+
+  // People list for filters + admin use
+  const [peopleAll, setPeopleAll] = useState<Person[]>([]);
+  // People list for the currently selected team (for filter convenience)
+  const [peopleForTeam, setPeopleForTeam] = useState<Person[]>([]);
+
+  // Tasks for the current window (team or all teams)
   const [tasks, setTasks] = useState<Task[]>([]);
   const [availability, setAvailability] = useState<any[]>([]);
 
-  // View mode and date anchors
-  const [viewMode, setViewMode] = useState<ViewMode>("week");
-  const [weekStart, setWeekStart] = useState<Date>(() => startOfWeek(new Date(), { weekStartsOn: 1 }));
-  const [monthAnchor, setMonthAnchor] = useState<Date>(() => startOfMonth(new Date()));
+  // Date anchors
+  const [weekStart, setWeekStart] = useState<Date>(() =>
+    startOfWeek(new Date(), { weekStartsOn: 1 })
+  );
+  const [monthAnchor, setMonthAnchor] = useState<Date>(() =>
+    startOfMonth(new Date())
+  );
 
   // UI
   const [loading, setLoading] = useState(false);
@@ -79,11 +92,12 @@ export default function Page() {
   const [personFilter, setPersonFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
 
-  // Modal state
+  // Modal
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Task | null>(null);
 
   // Form fields
+  const [fTeamId, setFTeamId] = useState<string>(""); // important for "All teams" creates
   const [fTitle, setFTitle] = useState("");
   const [fStart, setFStart] = useState("");
   const [fEnd, setFEnd] = useState("");
@@ -92,47 +106,97 @@ export default function Page() {
   const [fNotes, setFNotes] = useState("");
   const [fAssignees, setFAssignees] = useState<string[]>([]);
 
+  // For assignee selector, show members of the chosen team
+  const [peopleForFormTeam, setPeopleForFormTeam] = useState<Person[]>([]);
+
   // Conflicts (optional)
   const [conflicts, setConflicts] = useState<Record<string, any[]>>({});
   const [checkingConflicts, setCheckingConflicts] = useState(false);
 
-  // Computed windows
+  // Windows
   const weekEnd = useMemo(() => addDays(weekStart, 7), [weekStart]);
-  const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
+  const weekDays = useMemo(
+    () => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)),
+    [weekStart]
+  );
 
   const monthStart = useMemo(() => startOfMonth(monthAnchor), [monthAnchor]);
-  const monthEnd = useMemo(() => endOfMonth(monthAnchor), [monthAnchor]);
-
-  // A month grid usually shows 6 weeks (42 cells)
   const monthGridStart = useMemo(
     () => startOfWeek(monthStart, { weekStartsOn: 1 }),
     [monthStart]
   );
-  const monthCells = useMemo(() => Array.from({ length: 42 }, (_, i) => addDays(monthGridStart, i)), [monthGridStart]);
+  const monthCells = useMemo(
+    () => Array.from({ length: 42 }, (_, i) => addDays(monthGridStart, i)),
+    [monthGridStart]
+  );
 
-  // Load teams once
+  const currentWindow = useMemo(() => {
+    if (viewMode === "week") {
+      return { start: weekStart, end: weekEnd };
+    }
+    return { start: monthGridStart, end: addDays(monthGridStart, 42) };
+  }, [viewMode, weekStart, weekEnd, monthGridStart]);
+
+  const teamNameById = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const t of teams) m[t.id] = t.name;
+    return m;
+  }, [teams]);
+
+  const peopleOptionsForFilter = useMemo<Person[]>(() => {
+    return scope === "all" ? peopleAll : peopleForTeam;
+  }, [scope, peopleAll, peopleForTeam]);
+
+  // Load base: teams + all people
   useEffect(() => {
-    fetchTeams()
-      .then(ts => {
+    (async () => {
+      try {
+        const [ts, ps] = await Promise.all([fetchTeams(), fetchAllPeople()]);
         setTeams(ts);
+        setPeopleAll(ps);
         if (ts[0]) setTeamId(ts[0].id);
-      })
-      .catch(e => setBanner(e?.message ?? String(e)));
+      } catch (e: any) {
+        setBanner(e?.message ?? String(e));
+      }
+    })();
   }, []);
 
-  async function loadAll(tid: string, windowStart: Date, windowEnd: Date) {
+  // Keep team people list updated
+  useEffect(() => {
+    if (!teamId) return;
+    (async () => {
+      try {
+        const ppl = await fetchPeopleForTeam(teamId);
+        setPeopleForTeam(ppl);
+      } catch (e: any) {
+        setBanner(e?.message ?? String(e));
+      }
+    })();
+  }, [teamId]);
+
+  async function loadWindow() {
+    if (!teamId) return;
     setLoading(true);
     setBanner("");
+
     try {
-      const [ppl, tsk, avail] = await Promise.all([
-        fetchPeopleForTeam(tid),
-        fetchTasksForTeam(tid, iso(windowStart), iso(windowEnd)),
-        // Availability is meaningful for week view; still ok to show for month but it's “big”
-        getAvailability(tid, iso(windowStart), iso(windowEnd))
-      ]);
-      setPeople(ppl);
+      // tasks
+      const ids = scope === "all" ? teams.map((t) => t.id) : [teamId];
+
+      const tsk =
+        scope === "all"
+          ? await fetchTasksForTeams(ids, iso(currentWindow.start), iso(currentWindow.end))
+          : await fetchTasksForTeam(teamId, iso(currentWindow.start), iso(currentWindow.end));
+
       setTasks(tsk);
-      setAvailability(avail);
+
+      // availability panel (only meaningful for a single team scope)
+      if (scope === "team") {
+        const avail = await getAvailability(teamId, iso(currentWindow.start), iso(currentWindow.end));
+        setAvailability(avail);
+      } else {
+        setAvailability([]);
+      }
     } catch (e: any) {
       setBanner(e?.message ?? String(e));
     } finally {
@@ -140,23 +204,17 @@ export default function Page() {
     }
   }
 
-  // Reload when team or date range changes
+  // Reload when scope/view/window/team/teams list changes
   useEffect(() => {
     if (!teamId) return;
-
-    if (viewMode === "week") {
-      loadAll(teamId, weekStart, weekEnd);
-    } else {
-      // month window for fetching tasks: monthGridStart..(monthGridStart+42d)
-      const gridEnd = addDays(monthGridStart, 42);
-      loadAll(teamId, monthGridStart, gridEnd);
-    }
+    if (scope === "all" && teams.length === 0) return;
+    loadWindow();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [teamId, viewMode, weekStart, monthAnchor]);
+  }, [teamId, scope, viewMode, weekStart, monthAnchor, teams.length]);
 
-  // Filtered tasks (for both views)
+  // Filtered tasks
   const filteredTasks = useMemo(() => {
-    return (tasks ?? []).filter(t => {
+    return (tasks ?? []).filter((t) => {
       const statusOk = statusFilter === "all" ? true : t.status === statusFilter;
       const personOk =
         personFilter === "all"
@@ -166,7 +224,39 @@ export default function Page() {
     });
   }, [tasks, personFilter, statusFilter]);
 
+  // Day helper
+  function tasksForDay(d: Date) {
+    return filteredTasks
+      .filter((t) => sameDay(new Date(t.start_at), d))
+      .sort((a, b) => +new Date(a.start_at) - +new Date(b.start_at));
+  }
+
+  function groupedTasksForDay(d: Date) {
+    const list = tasksForDay(d);
+    const groups: Record<string, Task[]> = {};
+    for (const t of list) {
+      const tid = t.team_id ?? "unknown";
+      if (!groups[tid]) groups[tid] = [];
+      groups[tid].push(t);
+    }
+    const orderedTeamIds = Object.keys(groups).sort((a, b) => {
+      const an = teamNameById[a] ?? a;
+      const bn = teamNameById[b] ?? b;
+      return an.localeCompare(bn);
+    });
+    return orderedTeamIds.map((tid) => ({ teamId: tid, teamName: teamNameById[tid] ?? tid, tasks: groups[tid] }));
+  }
+
   // Modal helpers
+  async function syncPeopleForFormTeam(team_id: string) {
+    try {
+      const ppl = await fetchPeopleForTeam(team_id);
+      setPeopleForFormTeam(ppl);
+    } catch {
+      setPeopleForFormTeam([]);
+    }
+  }
+
   function openCreate(prefillDay?: Date) {
     setEditing(null);
     setConflicts({});
@@ -174,7 +264,12 @@ export default function Page() {
     setFNotes("");
     setFAssignees([]);
 
-    const start = prefillDay ? new Date(prefillDay) : (viewMode === "week" ? new Date(weekStart) : new Date(monthAnchor));
+    const chosenTeam = teamId;
+    setFTeamId(chosenTeam);
+    // fetch assignees list for chosen team
+    syncPeopleForFormTeam(chosenTeam);
+
+    const start = prefillDay ? new Date(prefillDay) : new Date(viewMode === "week" ? weekStart : monthAnchor);
     start.setHours(9, 0, 0, 0);
     const end = new Date(start);
     end.setHours(10, 0, 0, 0);
@@ -196,6 +291,11 @@ export default function Page() {
     setFStatus((task.status ?? "planned") as any);
     setFNotes(task.notes ?? "");
     setFAssignees((task.assignees ?? []).map((a: any) => a.person_id));
+
+    const tId = task.team_id ?? teamId;
+    setFTeamId(tId);
+    syncPeopleForFormTeam(tId);
+
     setModalOpen(true);
   }
 
@@ -230,32 +330,22 @@ export default function Page() {
     }
   }
 
-  async function refreshCurrentWindow() {
-    if (!teamId) return;
-    if (viewMode === "week") {
-      await loadAll(teamId, weekStart, weekEnd);
-    } else {
-      const gridEnd = addDays(monthGridStart, 42);
-      await loadAll(teamId, monthGridStart, gridEnd);
-    }
-  }
-
   async function onSave() {
     setBanner("");
-    if (!teamId) return;
+    if (!fTeamId) return setBanner("Team is required.");
     if (!fTitle.trim()) return setBanner("Task title is required.");
     if (!fStart || !fEnd) return setBanner("Start and End are required.");
 
     const startISO = dtLocalToIso(fStart);
     const endISO = dtLocalToIso(fEnd);
-
     if (new Date(endISO) <= new Date(startISO)) return setBanner("End must be after Start.");
 
-    // soft conflict check (warn only)
+    // conflict check (warn only)
     await checkConflicts();
 
     try {
       if (editing) {
+        // NOTE: updateTask currently doesn't change team_id (keeps tasks stable)
         await updateTask(editing.id, {
           title: fTitle.trim(),
           start_at: startISO,
@@ -263,23 +353,23 @@ export default function Page() {
           task_size: fSize,
           status: fStatus,
           notes: fNotes,
-          assigneeIds: fAssignees
+          assigneeIds: fAssignees,
         });
       } else {
         await createTask({
           title: fTitle.trim(),
-          team_id: teamId,
+          team_id: fTeamId,
           start_at: startISO,
           end_at: endISO,
           task_size: fSize,
           status: fStatus,
           notes: fNotes,
-          assigneeIds: fAssignees
+          assigneeIds: fAssignees,
         });
       }
 
       setModalOpen(false);
-      await refreshCurrentWindow();
+      await loadWindow();
     } catch (e: any) {
       setBanner(e?.message ?? String(e));
     }
@@ -291,7 +381,7 @@ export default function Page() {
     try {
       await deleteTask(taskId);
       setModalOpen(false);
-      await refreshCurrentWindow();
+      await loadWindow();
     } catch (e: any) {
       setBanner(e?.message ?? String(e));
     }
@@ -312,24 +402,30 @@ export default function Page() {
     setMonthAnchor(startOfMonth(now));
   }
 
-  // Week view tasks by day
-  function tasksForDay(d: Date) {
-    return filteredTasks
-      .filter(t => sameDay(new Date(t.start_at), d))
-      .sort((a, b) => +new Date(a.start_at) - +new Date(b.start_at));
-  }
-
-  // Month view tasks by day (limit display)
-  function tasksForMonthCell(d: Date) {
-    const list = tasksForDay(d);
-    return list;
-  }
+  const headerLabel =
+    viewMode === "week"
+      ? `${format(weekStart, "dd MMM yyyy")} – ${format(addDays(weekStart, 6), "dd MMM yyyy")}`
+      : format(monthAnchor, "MMMM yyyy");
 
   return (
     <main style={{ padding: 16, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial" }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-        <h1 style={{ fontSize: 22, fontWeight: 900, margin: 0 }}>VT Multi-Team Scheduler</h1>
-        <span style={{ color: "#666", fontSize: 13 }}>(GitHub Pages UI + Supabase)</span>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+            <h1 style={{ fontSize: 22, fontWeight: 900, margin: 0 }}>VT Multi-Team Scheduler</h1>
+            <span style={{ color: "#666", fontSize: 13 }}>(GitHub Pages UI + Supabase)</span>
+          </div>
+          <div style={{ marginTop: 6, fontSize: 13, color: "#666" }}>
+            Admin: <a href="./admin/">manage people + team membership</a>
+          </div>
+        </div>
+
+        <div style={{ alignSelf: "center", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          {loading && <span style={{ color: "#666", fontSize: 13 }}>Loading…</span>}
+          <button onClick={() => openCreate()} style={{ fontWeight: 900 }}>
+            + New task
+          </button>
+        </div>
       </div>
 
       {banner && (
@@ -341,8 +437,25 @@ export default function Page() {
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 12 }}>
         <label>
           Team:&nbsp;
-          <select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
-            {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          <select
+            value={teamId}
+            onChange={(e) => setTeamId(e.target.value)}
+            disabled={teams.length === 0}
+            title="Used for 'Selected team' scope and default team in New Task"
+          >
+            {teams.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          Scope:&nbsp;
+          <select value={scope} onChange={(e) => setScope(e.target.value as ScopeMode)}>
+            <option value="team">Selected team</option>
+            <option value="all">All teams</option>
           </select>
         </label>
 
@@ -358,15 +471,7 @@ export default function Page() {
         <button onClick={goToday}>Today</button>
         <button onClick={goNext}>▶</button>
 
-        <div style={{ fontWeight: 800 }}>
-          {viewMode === "week"
-            ? `${format(weekStart, "dd MMM yyyy")} – ${format(addDays(weekStart, 6), "dd MMM yyyy")}`
-            : format(monthAnchor, "MMMM yyyy")}
-        </div>
-
-        <button onClick={() => openCreate()} style={{ marginLeft: "auto", fontWeight: 900 }}>
-          + New task
-        </button>
+        <div style={{ fontWeight: 900 }}>{headerLabel}</div>
       </div>
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
@@ -374,7 +479,11 @@ export default function Page() {
           Filter person:&nbsp;
           <select value={personFilter} onChange={(e) => setPersonFilter(e.target.value)}>
             <option value="all">All</option>
-            {people.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {peopleOptionsForFilter.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
           </select>
         </label>
 
@@ -382,57 +491,87 @@ export default function Page() {
           Filter status:&nbsp;
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
             <option value="all">All</option>
-            {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+            {STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
           </select>
         </label>
-
-        {loading && <span style={{ color: "#666", fontSize: 13 }}>Loading…</span>}
       </div>
 
-      {/* MAIN CONTENT */}
       <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, marginTop: 14 }}>
+        {/* Schedule */}
         <section style={{ border: "1px solid #ddd", borderRadius: 16, padding: 12 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
             <h2 style={{ fontSize: 16, fontWeight: 900, margin: 0 }}>
-              {viewMode === "week" ? "Week schedule" : "Month schedule"}
+              {scope === "all" ? "Overview (all teams)" : "Schedule"}
             </h2>
             <span style={{ fontSize: 12, color: "#666" }}>
-              Click a day header to add • click a task to edit
+              Click day header to add • click a task to edit
             </span>
           </div>
 
           {viewMode === "week" ? (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginTop: 10 }}>
-              {weekDays.map(d => {
-                const dayTasks = tasksForDay(d);
+              {weekDays.map((d) => {
+                if (scope === "team") {
+                  const dayTasks = tasksForDay(d);
+                  return (
+                    <div key={d.toISOString()} style={cardCol}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                        <button onClick={() => openCreate(d)} style={dayHeaderBtn} title="Add task on this day">
+                          {format(d, "EEE dd")}
+                        </button>
+                        <span style={{ fontSize: 12, color: "#666" }}>{dayTasks.length}</span>
+                      </div>
+
+                      {dayTasks.map((t) => (
+                        <TaskPill key={t.id} task={t} onClick={() => openEdit(t)} />
+                      ))}
+
+                      {dayTasks.length === 0 && <div style={{ color: "#777", fontSize: 13 }}>No tasks</div>}
+                    </div>
+                  );
+                }
+
+                // All teams: grouped
+                const groups = groupedTasksForDay(d);
+                const total = groups.reduce((acc, g) => acc + g.tasks.length, 0);
+
                 return (
                   <div key={d.toISOString()} style={cardCol}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                      <button
-                        onClick={() => openCreate(d)}
-                        style={dayHeaderBtn}
-                        title="Add task on this day"
-                      >
+                      <button onClick={() => openCreate(d)} style={dayHeaderBtn} title="Add task on this day">
                         {format(d, "EEE dd")}
                       </button>
-                      <span style={{ fontSize: 12, color: "#666" }}>{dayTasks.length}</span>
+                      <span style={{ fontSize: 12, color: "#666" }}>{total}</span>
                     </div>
 
-                    {dayTasks.map(t => (
-                      <TaskPill key={t.id} task={t} onClick={() => openEdit(t)} />
+                    {groups.map((g) => (
+                      <div key={g.teamId} style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: 12, fontWeight: 900, color: "#666", marginBottom: 6 }}>
+                          {g.teamName}
+                        </div>
+                        {g.tasks.map((t) => (
+                          <TaskPill key={t.id} task={t} onClick={() => openEdit(t)} />
+                        ))}
+                      </div>
                     ))}
 
-                    {dayTasks.length === 0 && <div style={{ color: "#777", fontSize: 13 }}>No tasks</div>}
+                    {total === 0 && <div style={{ color: "#777", fontSize: 13 }}>No tasks</div>}
                   </div>
                 );
               })}
             </div>
           ) : (
             <>
-              {/* Month day-of-week header */}
+              {/* Month header */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginTop: 10 }}>
-                {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(d => (
-                  <div key={d} style={{ fontSize: 12, fontWeight: 900, color: "#666", paddingLeft: 4 }}>{d}</div>
+                {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
+                  <div key={d} style={{ fontSize: 12, fontWeight: 900, color: "#666", paddingLeft: 4 }}>
+                    {d}
+                  </div>
                 ))}
               </div>
 
@@ -440,33 +579,74 @@ export default function Page() {
               <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginTop: 8 }}>
                 {monthCells.map((d, idx) => {
                   const inMonth = d.getMonth() === monthStart.getMonth();
-                  const dayTasks = tasksForMonthCell(d);
-                  const maxShow = 4;
+                  const list = tasksForDay(d);
+
+                  if (scope === "team") {
+                    const maxShow = 4;
+                    return (
+                      <div
+                        key={`${d.toISOString()}_${idx}`}
+                        style={{ ...cardCol, minHeight: 160, opacity: inMonth ? 1 : 0.55 }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                          <button onClick={() => openCreate(d)} style={dayHeaderBtn} title="Add task on this day">
+                            {format(d, "d")}
+                          </button>
+                          <span style={{ fontSize: 12, color: "#666" }}>{list.length}</span>
+                        </div>
+
+                        {list.slice(0, maxShow).map((t) => (
+                          <TaskPill key={t.id} task={t} onClick={() => openEdit(t)} compact />
+                        ))}
+
+                        {list.length > maxShow && (
+                          <div style={{ fontSize: 12, color: "#666" }}>+{list.length - maxShow} more</div>
+                        )}
+
+                        {list.length === 0 && <div style={{ color: "#777", fontSize: 12 }}>—</div>}
+                      </div>
+                    );
+                  }
+
+                  // All teams: show up to N per team for readability
+                  const groups = groupedTasksForDay(d);
+                  const total = groups.reduce((acc, g) => acc + g.tasks.length, 0);
+                  const maxTeamsShow = 3;
+                  const maxPerTeam = 2;
 
                   return (
-                    <div key={`${d.toISOString()}_${idx}`} style={{ ...cardCol, minHeight: 160, opacity: inMonth ? 1 : 0.55 }}>
+                    <div
+                      key={`${d.toISOString()}_${idx}`}
+                      style={{ ...cardCol, minHeight: 160, opacity: inMonth ? 1 : 0.55 }}
+                    >
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                        <button
-                          onClick={() => openCreate(d)}
-                          style={dayHeaderBtn}
-                          title="Add task on this day"
-                        >
+                        <button onClick={() => openCreate(d)} style={dayHeaderBtn} title="Add task on this day">
                           {format(d, "d")}
                         </button>
-                        <span style={{ fontSize: 12, color: "#666" }}>{dayTasks.length}</span>
+                        <span style={{ fontSize: 12, color: "#666" }}>{total}</span>
                       </div>
 
-                      {dayTasks.slice(0, maxShow).map(t => (
-                        <TaskPill key={t.id} task={t} onClick={() => openEdit(t)} compact />
+                      {groups.slice(0, maxTeamsShow).map((g) => (
+                        <div key={g.teamId} style={{ marginBottom: 8 }}>
+                          <div style={{ fontSize: 11, fontWeight: 900, color: "#666", marginBottom: 4 }}>
+                            {g.teamName}
+                          </div>
+                          {g.tasks.slice(0, maxPerTeam).map((t) => (
+                            <TaskPill key={t.id} task={t} onClick={() => openEdit(t)} compact />
+                          ))}
+                          {g.tasks.length > maxPerTeam && (
+                            <div style={{ fontSize: 11, color: "#666" }}>+{g.tasks.length - maxPerTeam}</div>
+                          )}
+                        </div>
                       ))}
 
-                      {dayTasks.length > maxShow && (
+                      {groups.length > maxTeamsShow && (
                         <div style={{ fontSize: 12, color: "#666" }}>
-                          +{dayTasks.length - maxShow} more
+                          +{groups.length - maxTeamsShow} teams
                         </div>
                       )}
 
-                      {dayTasks.length === 0 && <div style={{ color: "#777", fontSize: 12 }}>—</div>}
+                      {total === 0 && <div style={{ color: "#777", fontSize: 12 }}>—</div>}
                     </div>
                   );
                 })}
@@ -475,33 +655,48 @@ export default function Page() {
           )}
         </section>
 
-        {/* Availability */}
+        {/* Sidebar */}
         <section style={{ border: "1px solid #ddd", borderRadius: 16, padding: 12 }}>
-          <h2 style={{ fontSize: 16, fontWeight: 900, margin: 0 }}>Who’s free</h2>
-          <div style={{ fontSize: 13, color: "#666", marginTop: 6, marginBottom: 10 }}>
-            Sorted by least scheduled hours in the current window.
-          </div>
+          <h2 style={{ fontSize: 16, fontWeight: 900, margin: 0 }}>
+            {scope === "team" ? "Who’s free" : "Overview notes"}
+          </h2>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {availability.map((a: any) => (
-              <div key={a.person_id} style={{ border: "1px solid #eee", borderRadius: 14, padding: 10 }}>
-                <div style={{ fontWeight: 900 }}>{a.name}</div>
-                <div style={{ fontSize: 13 }}>
-                  Scheduled: <b>{Number(a.scheduled_hours).toFixed(2)}h</b> • Daily cap: {a.daily_capacity_hours}h
-                </div>
+          {scope === "team" ? (
+            <>
+              <div style={{ fontSize: 13, color: "#666", marginTop: 6, marginBottom: 10 }}>
+                Sorted by least scheduled hours in the current window.
               </div>
-            ))}
-            {availability.length === 0 && <div style={{ color: "#777", fontSize: 13 }}>No people found for this team.</div>}
-          </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {availability.map((a: any) => (
+                  <div key={a.person_id} style={{ border: "1px solid #eee", borderRadius: 14, padding: 10 }}>
+                    <div style={{ fontWeight: 900 }}>{a.name}</div>
+                    <div style={{ fontSize: 13 }}>
+                      Scheduled: <b>{Number(a.scheduled_hours).toFixed(2)}h</b> • Daily cap: {a.daily_capacity_hours}h
+                    </div>
+                  </div>
+                ))}
+                {availability.length === 0 && (
+                  <div style={{ color: "#777", fontSize: 13 }}>No people found for this team.</div>
+                )}
+              </div>
+            </>
+          ) : (
+            <div style={{ marginTop: 10, fontSize: 13, color: "#666", lineHeight: 1.4 }}>
+              You’re in <b>All teams</b> scope.
+              <ul style={{ marginTop: 8 }}>
+                <li>Tasks are grouped by team inside each day.</li>
+                <li>Use filters to narrow by person/status.</li>
+                <li>For capacity (“who’s free”), switch scope back to <b>Selected team</b>.</li>
+              </ul>
+            </div>
+          )}
         </section>
       </div>
 
       {/* Modal */}
       {modalOpen && (
-        <div
-          onClick={() => setModalOpen(false)}
-          style={modalBackdrop}
-        >
+        <div onClick={() => setModalOpen(false)} style={modalBackdrop}>
           <div onClick={(e) => e.stopPropagation()} style={modalCard}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
               <div>
@@ -509,15 +704,38 @@ export default function Page() {
                   {editing ? "Edit task" : "New task"}
                 </div>
                 <div style={{ color: "#666", fontSize: 12 }}>
-                  Times render in your browser timezone (Perth users will see Perth times).
+                  Times render in your browser timezone.
                 </div>
               </div>
               <button onClick={() => setModalOpen(false)}>✕</button>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12, marginTop: 12 }}>
-              {/* Left form */}
+              {/* Left */}
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <label style={{ fontSize: 13 }}>
+                  Team
+                  <select
+                    value={fTeamId}
+                    onChange={async (e) => {
+                      const id = e.target.value;
+                      setFTeamId(id);
+                      setFAssignees([]);
+                      setConflicts({});
+                      await syncPeopleForFormTeam(id);
+                    }}
+                    style={inputStyle as any}
+                    disabled={!!editing} // keep team fixed on edit (safe default)
+                    title={editing ? "Team is fixed for existing tasks." : "Choose which team owns this task."}
+                  >
+                    {teams.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
                 <label style={{ fontSize: 13 }}>
                   Task name
                   <input value={fTitle} onChange={(e) => setFTitle(e.target.value)} style={inputStyle} />
@@ -526,11 +744,21 @@ export default function Page() {
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                   <label style={{ fontSize: 13 }}>
                     Start
-                    <input type="datetime-local" value={fStart} onChange={(e) => setFStart(e.target.value)} style={inputStyle} />
+                    <input
+                      type="datetime-local"
+                      value={fStart}
+                      onChange={(e) => setFStart(e.target.value)}
+                      style={inputStyle}
+                    />
                   </label>
                   <label style={{ fontSize: 13 }}>
                     End
-                    <input type="datetime-local" value={fEnd} onChange={(e) => setFEnd(e.target.value)} style={inputStyle} />
+                    <input
+                      type="datetime-local"
+                      value={fEnd}
+                      onChange={(e) => setFEnd(e.target.value)}
+                      style={inputStyle}
+                    />
                   </label>
                 </div>
 
@@ -545,30 +773,53 @@ export default function Page() {
                   <label style={{ fontSize: 13 }}>
                     Task size
                     <select value={fSize} onChange={(e) => setFSize(e.target.value as any)} style={inputStyle as any}>
-                      {TASK_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
+                      {TASK_SIZES.map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
                     </select>
                   </label>
 
                   <label style={{ fontSize: 13 }}>
                     Status
                     <select value={fStatus} onChange={(e) => setFStatus(e.target.value as any)} style={inputStyle as any}>
-                      {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                      {STATUSES.map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
                     </select>
                   </label>
                 </div>
 
                 <label style={{ fontSize: 13 }}>
                   Notes
-                  <textarea value={fNotes} onChange={(e) => setFNotes(e.target.value)} style={{ ...inputStyle, minHeight: 90 }} />
+                  <textarea
+                    value={fNotes}
+                    onChange={(e) => setFNotes(e.target.value)}
+                    style={{ ...inputStyle, minHeight: 90 }}
+                  />
                 </label>
               </div>
 
-              {/* Right: assignees + conflicts */}
+              {/* Right */}
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ fontWeight: 900, fontSize: 13 }}>Assignees</div>
+                <div style={{ fontWeight: 900, fontSize: 13 }}>Assignees (team members)</div>
 
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 260, overflow: "auto", border: "1px solid #eee", borderRadius: 12, padding: 10 }}>
-                  {people.map(p => {
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    maxHeight: 260,
+                    overflow: "auto",
+                    border: "1px solid #eee",
+                    borderRadius: 12,
+                    padding: 10,
+                  }}
+                >
+                  {peopleForFormTeam.map((p) => {
                     const checked = fAssignees.includes(p.id);
                     return (
                       <label key={p.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
@@ -576,15 +827,19 @@ export default function Page() {
                           type="checkbox"
                           checked={checked}
                           onChange={(e) => {
-                            if (e.target.checked) setFAssignees(prev => [...prev, p.id]);
-                            else setFAssignees(prev => prev.filter(x => x !== p.id));
+                            if (e.target.checked) setFAssignees((prev) => [...prev, p.id]);
+                            else setFAssignees((prev) => prev.filter((x) => x !== p.id));
                           }}
                         />
                         <span>{p.name}</span>
                       </label>
                     );
                   })}
-                  {people.length === 0 && <div style={{ fontSize: 13, color: "#777" }}>No people linked to this team.</div>}
+                  {peopleForFormTeam.length === 0 && (
+                    <div style={{ fontSize: 13, color: "#777" }}>
+                      No members found for this team. Add/assign people in <a href="./admin/">Admin</a>.
+                    </div>
+                  )}
                 </div>
 
                 <button onClick={checkConflicts} disabled={checkingConflicts}>
@@ -595,7 +850,7 @@ export default function Page() {
                   <div style={{ border: "1px solid #f3d1d1", background: "#fff5f5", borderRadius: 12, padding: 10 }}>
                     <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>Potential conflicts</div>
                     {Object.entries(conflicts).map(([pid, list]) => {
-                      const personName = people.find(p => p.id === pid)?.name ?? pid;
+                      const personName = peopleAll.find((p) => p.id === pid)?.name ?? pid;
                       return (
                         <div key={pid} style={{ marginBottom: 8 }}>
                           <div style={{ fontWeight: 900, fontSize: 13 }}>{personName}</div>
@@ -640,10 +895,8 @@ export default function Page() {
 function TaskPill({ task, onClick, compact }: { task: any; onClick: () => void; compact?: boolean }) {
   const start = new Date(task.start_at);
   const end = new Date(task.end_at);
-  const who = (task.assignees ?? []).map((a: any) => a.name).join(", ");
 
-  // Keep month view tidy
-  const title = compact ? task.title : task.title;
+  const who = (task.assignees ?? []).map((a: any) => a.name).join(", ");
   const subtitle = compact
     ? `${format(start, "HH:mm")}`
     : `${format(start, "HH:mm")}–${format(end, "HH:mm")} • ${task.task_size} • ${task.status}`;
@@ -656,12 +909,20 @@ function TaskPill({ task, onClick, compact }: { task: any; onClick: () => void; 
         borderRadius: 12,
         padding: compact ? "6px 8px" : "10px",
         marginBottom: 8,
-        cursor: "pointer"
+        cursor: "pointer",
       }}
       title="Click to edit"
     >
-      <div style={{ fontWeight: 900, fontSize: compact ? 12 : 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-        {title}
+      <div
+        style={{
+          fontWeight: 900,
+          fontSize: compact ? 12 : 13,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {task.title}
       </div>
       <div style={{ fontSize: 12, color: "#555", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
         {subtitle}
@@ -679,7 +940,7 @@ const cardCol: React.CSSProperties = {
   border: "1px solid #eee",
   borderRadius: 16,
   padding: 8,
-  minHeight: 190
+  minHeight: 190,
 };
 
 const dayHeaderBtn: React.CSSProperties = {
@@ -687,7 +948,7 @@ const dayHeaderBtn: React.CSSProperties = {
   border: "none",
   background: "transparent",
   padding: 0,
-  cursor: "pointer"
+  cursor: "pointer",
 };
 
 const inputStyle: React.CSSProperties = {
@@ -697,7 +958,7 @@ const inputStyle: React.CSSProperties = {
   border: "1px solid #ddd",
   outline: "none",
   marginTop: 6,
-  fontSize: 14
+  fontSize: 14,
 };
 
 const modalBackdrop: React.CSSProperties = {
@@ -707,13 +968,13 @@ const modalBackdrop: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  padding: 16
+  padding: 16,
 };
 
 const modalCard: React.CSSProperties = {
-  width: "min(920px, 100%)",
+  width: "min(980px, 100%)",
   background: "white",
   borderRadius: 18,
   border: "1px solid #ddd",
-  padding: 14
+  padding: 14,
 };

@@ -153,3 +153,109 @@ export async function getPersonTasksInWindow(personId: string, windowStartISO: s
   if (error) return null;
   return data ?? [];
 }
+// ---------- PEOPLE + MEMBERSHIP CRUD ----------
+
+export async function fetchAllPeople(): Promise<Person[]> {
+  const { data, error } = await supabase
+    .from("people")
+    .select("id,name,daily_capacity_hours")
+    .order("name");
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function createPerson(payload: { name: string; daily_capacity_hours?: number }) {
+  const { data, error } = await supabase
+    .from("people")
+    .insert([{
+      name: payload.name,
+      daily_capacity_hours: payload.daily_capacity_hours ?? 8
+    }])
+    .select("id,name,daily_capacity_hours")
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function updatePerson(personId: string, payload: { name: string; daily_capacity_hours: number }) {
+  const { error } = await supabase
+    .from("people")
+    .update({
+      name: payload.name,
+      daily_capacity_hours: payload.daily_capacity_hours
+    })
+    .eq("id", personId);
+
+  if (error) throw error;
+}
+
+export async function deletePerson(personId: string) {
+  // If you have FK constraints from task_assignees/team_members, this may fail unless you delete those first.
+  const { error } = await supabase.from("people").delete().eq("id", personId);
+  if (error) throw error;
+}
+
+export async function fetchTeamMembers(teamId: string): Promise<string[]> {
+  const { data, error } = await supabase
+    .from("team_members")
+    .select("person_id")
+    .eq("team_id", teamId);
+
+  if (error) throw error;
+  return (data ?? []).map((r: any) => r.person_id);
+}
+
+export async function setTeamMembers(teamId: string, personIds: string[]) {
+  // Replace membership for a team
+  const { error: delErr } = await supabase.from("team_members").delete().eq("team_id", teamId);
+  if (delErr) throw delErr;
+
+  if (personIds.length) {
+    const rows = personIds.map(pid => ({ team_id: teamId, person_id: pid }));
+    const { error: insErr } = await supabase.from("team_members").insert(rows);
+    if (insErr) throw insErr;
+  }
+}
+
+// ---------- ALL-TEAMS TASKS ----------
+
+export async function fetchTasksForTeams(teamIds: string[], windowStartISO: string, windowEndISO: string) {
+  if (!teamIds.length) return [];
+
+  const { data: taskRows, error: tErr } = await supabase
+    .from("tasks")
+    .select("id,title,team_id,project_id,start_at,end_at,task_size,status,notes")
+    .in("team_id", teamIds)
+    .lt("start_at", windowEndISO)
+    .gt("end_at", windowStartISO)
+    .neq("status", "cancelled")
+    .order("start_at");
+
+  if (tErr) throw tErr;
+
+  const tasks = taskRows ?? [];
+  if (!tasks.length) return [];
+
+  const taskIds = tasks.map((t: any) => t.id);
+
+  const { data: taRows, error: taErr } = await supabase
+    .from("task_assignees")
+    .select("task_id, people(id,name)")
+    .in("task_id", taskIds);
+
+  if (taErr) throw taErr;
+
+  const map: Record<string, { person_id: string; name: string }[]> = {};
+  for (const r of (taRows ?? []) as any[]) {
+    const p = r.people;
+    if (!p) continue;
+    if (!map[r.task_id]) map[r.task_id] = [];
+    map[r.task_id].push({ person_id: p.id, name: p.name });
+  }
+
+  return tasks.map((t: any) => ({
+    ...t,
+    assignees: map[t.id] ?? []
+  }));
+}

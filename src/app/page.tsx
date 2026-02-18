@@ -1,15 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  addDays,
-  addMonths,
-  endOfMonth,
-  format,
-  startOfMonth,
-  startOfWeek,
-  subMonths
-} from "date-fns";
+import { addDays, addMonths, format, startOfMonth, startOfWeek, subMonths } from "date-fns";
 
 import {
   createTask,
@@ -33,14 +25,54 @@ type Task = any;
 const TASK_SIZES = ["hourly", "half_day", "full_day", "custom"] as const;
 const STATUSES = ["planned", "in_progress", "done", "cancelled"] as const;
 
-function iso(d: Date) { return d.toISOString(); }
-function dtLocalToIso(v: string) { return new Date(v).toISOString(); }
+function iso(d: Date) {
+  return d.toISOString();
+}
+
+/**
+ * Parse a datetime-local string safely as LOCAL time (no timezone in input)
+ * and convert to UTC ISO string for storage.
+ * Input format: YYYY-MM-DDTHH:mm
+ */
+function dtLocalToIso(value: string) {
+  // Defensive: accept empty
+  if (!value) return "";
+  const [datePart, timePart] = value.split("T");
+  const [yyyy, mm, dd] = datePart.split("-").map(Number);
+  const [hh, mi] = timePart.split(":").map(Number);
+  const d = new Date(yyyy, (mm ?? 1) - 1, dd ?? 1, hh ?? 0, mi ?? 0, 0, 0); // LOCAL
+  return d.toISOString(); // UTC ISO
+}
+
+/**
+ * Convert an ISO string to datetime-local input string using LOCAL time.
+ */
 function isoToDtLocal(isoStr: string) {
   const d = new Date(isoStr);
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const yyyy = d.getFullYear();
+  const mm = pad(d.getMonth() + 1);
+  const dd = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const mi = pad(d.getMinutes());
+  return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
 }
-function sameDay(a: Date, b: Date) { return a.toDateString() === b.toDateString(); }
+
+function dayWindowLocal(day: Date) {
+  const start = new Date(day);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(day);
+  end.setHours(23, 59, 59, 999);
+  return { start, end };
+}
+
+function overlapsDay(taskStartISO: string, taskEndISO: string, day: Date) {
+  const ts = new Date(taskStartISO);
+  const te = new Date(taskEndISO);
+  const { start: ds, end: de } = dayWindowLocal(day);
+  // overlap condition: taskStart < dayEnd && taskEnd > dayStart
+  return ts < de && te > ds;
+}
 
 export default function Page() {
   const [teams, setTeams] = useState<Team[]>([]);
@@ -53,7 +85,7 @@ export default function Page() {
   const [peopleForTeam, setPeopleForTeam] = useState<Person[]>([]);
 
   const [tasks, setTasks] = useState<Task[]>([]);
-const [availability, setAvailability] = useState<any[]>([]);
+  const [availability, setAvailability] = useState<any[]>([]);
 
   const [weekStart, setWeekStart] = useState<Date>(() => startOfWeek(new Date(), { weekStartsOn: 1 }));
   const [monthAnchor, setMonthAnchor] = useState<Date>(() => startOfMonth(new Date()));
@@ -99,7 +131,6 @@ const [availability, setAvailability] = useState<any[]>([]);
 
   const peopleOptionsForFilter = useMemo(() => (scope === "all" ? peopleAll : peopleForTeam), [scope, peopleAll, peopleForTeam]);
 
-  // Initial load
   useEffect(() => {
     (async () => {
       try {
@@ -113,7 +144,6 @@ const [availability, setAvailability] = useState<any[]>([]);
     })();
   }, []);
 
-  // Selected team people
   useEffect(() => {
     if (!teamId) return;
     (async () => {
@@ -172,14 +202,15 @@ const [availability, setAvailability] = useState<any[]>([]);
     });
   }, [tasks, personFilter, statusFilter]);
 
-  function tasksForDay(d: Date) {
+  function tasksForDay(day: Date) {
+    // ✅ show tasks that overlap the day (multi-day support)
     return filteredTasks
-      .filter(t => sameDay(new Date(t.start_at), d))
+      .filter(t => overlapsDay(t.start_at, t.end_at, day))
       .sort((a, b) => +new Date(a.start_at) - +new Date(b.start_at));
   }
 
-  function groupedTasksForDay(d: Date) {
-    const list = tasksForDay(d);
+  function groupedTasksForDay(day: Date) {
+    const list = tasksForDay(day);
     const groups: Record<string, Task[]> = {};
     for (const t of list) {
       const tid = t.team_id ?? "unknown";
@@ -243,11 +274,16 @@ const [availability, setAvailability] = useState<any[]>([]);
   function applyPreset(size: (typeof TASK_SIZES)[number]) {
     setFSize(size);
     if (!fStart) return;
-    const start = new Date(fStart);
+
+    // ✅ parse local datetime properly (not Date(fStart) ambiguity)
+    const startISO = dtLocalToIso(fStart);
+    const start = new Date(startISO);
+
     const end = new Date(start);
     if (size === "hourly") end.setHours(end.getHours() + 1);
     if (size === "half_day") end.setHours(end.getHours() + 4);
     if (size === "full_day") end.setHours(end.getHours() + 8);
+
     if (size !== "custom") setFEnd(isoToDtLocal(end.toISOString()));
   }
 
@@ -344,6 +380,9 @@ const [availability, setAvailability] = useState<any[]>([]);
       ? `${format(weekStart, "dd MMM yyyy")} – ${format(addDays(weekStart, 6), "dd MMM yyyy")}`
       : format(monthAnchor, "MMMM yyyy");
 
+  const adminHref = "#";
+  const schedulerHref = "#";
+
   return (
     <div className="container">
       <div className="topbar">
@@ -352,14 +391,14 @@ const [availability, setAvailability] = useState<any[]>([]);
           <div className="sub">
             Overview + team calendars •{" "}
             <a
-  href="#"
-  onClick={(e) => {
-    e.preventDefault();
-    window.location.href = "./admin/?v=" + Date.now();
-  }}
->
-  Admin (people/teams)
-</a>
+              href={adminHref}
+              onClick={(e) => {
+                e.preventDefault();
+                window.location.href = "./admin/?v=" + Date.now();
+              }}
+            >
+              Admin (people/teams)
+            </a>
           </div>
         </div>
 
@@ -445,7 +484,7 @@ const [availability, setAvailability] = useState<any[]>([]);
                           <button className="dayBtn" onClick={() => openCreate(d)}>{format(d, "EEE dd")}</button>
                           <span className="count">{dayTasks.length}</span>
                         </div>
-                        {dayTasks.map(t => <TaskCard key={t.id} task={t} onClick={() => openEdit(t)} />)}
+                        {dayTasks.map(t => <TaskCard key={t.id} task={t} onClick={() => openEdit(t)} day={d} />)}
                         {dayTasks.length === 0 && <div className="small">No tasks</div>}
                       </div>
                     );
@@ -463,7 +502,7 @@ const [availability, setAvailability] = useState<any[]>([]);
                       {groups.map(g => (
                         <div key={g.teamId} style={{ marginBottom: 10 }}>
                           <div className="small" style={{ fontWeight: 900, marginBottom: 6 }}>{g.teamName}</div>
-                          {g.tasks.map(t => <TaskCard key={t.id} task={t} onClick={() => openEdit(t)} />)}
+                          {g.tasks.map(t => <TaskCard key={t.id} task={t} onClick={() => openEdit(t)} day={d} />)}
                         </div>
                       ))}
 
@@ -493,7 +532,7 @@ const [availability, setAvailability] = useState<any[]>([]);
                             <button className="dayBtn" onClick={() => openCreate(d)}>{format(d, "d")}</button>
                             <span className="count">{list.length}</span>
                           </div>
-                          {list.slice(0, maxShow).map(t => <TaskCard key={t.id} task={t} compact onClick={() => openEdit(t)} />)}
+                          {list.slice(0, maxShow).map(t => <TaskCard key={t.id} task={t} compact onClick={() => openEdit(t)} day={d} />)}
                           {list.length > maxShow && <div className="small">+{list.length - maxShow} more</div>}
                           {list.length === 0 && <div className="small">—</div>}
                         </div>
@@ -516,7 +555,7 @@ const [availability, setAvailability] = useState<any[]>([]);
                           <div key={g.teamId} style={{ marginBottom: 8 }}>
                             <div className="small" style={{ fontWeight: 900, marginBottom: 4 }}>{g.teamName}</div>
                             {g.tasks.slice(0, maxPerTeam).map(t => (
-                              <TaskCard key={t.id} task={t} compact onClick={() => openEdit(t)} />
+                              <TaskCard key={t.id} task={t} compact onClick={() => openEdit(t)} day={d} />
                             ))}
                             {g.tasks.length > maxPerTeam && <div className="small">+{g.tasks.length - maxPerTeam}</div>}
                           </div>
@@ -557,8 +596,7 @@ const [availability, setAvailability] = useState<any[]>([]);
               <div className="small" style={{ lineHeight: 1.5 }}>
                 You’re viewing <b>All teams</b>.
                 <div className="hr" />
-                Use filters (person/status) to narrow down.  
-                For capacity (“who’s free”), switch scope back to <b>Selected team</b>.
+                Use filters (person/status) to narrow down. For capacity, switch scope to <b>Selected team</b>.
               </div>
             )}
           </div>
@@ -593,7 +631,6 @@ const [availability, setAvailability] = useState<any[]>([]);
                       await syncPeopleForFormTeam(id);
                     }}
                     disabled={!!editing}
-                    title={editing ? "Team is fixed for existing tasks." : "Choose which team owns this task."}
                   >
                     {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </select>
@@ -666,7 +703,16 @@ const [availability, setAvailability] = useState<any[]>([]);
                   })}
                   {peopleForFormTeam.length === 0 && (
                     <div className="small">
-                      No members found for this team. Manage in <a href="./admin/">Admin</a>.
+                      No members found for this team. Manage in{" "}
+                      <a
+                        href={schedulerHref}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          window.location.href = "./admin/?v=" + Date.now();
+                        }}
+                      >
+                        Admin
+                      </a>.
                     </div>
                   )}
                 </div>
@@ -719,18 +765,28 @@ const [availability, setAvailability] = useState<any[]>([]);
   );
 }
 
-function TaskCard({ task, onClick, compact }: { task: any; onClick: () => void; compact?: boolean }) {
+function TaskCard({ task, onClick, compact, day }: { task: any; onClick: () => void; compact?: boolean; day: Date }) {
   const start = new Date(task.start_at);
   const end = new Date(task.end_at);
+
   const who = (task.assignees ?? []).map((a: any) => a.name).join(", ");
+
+  const { start: ds, end: de } = dayWindowLocal(day);
+  const startsToday = start >= ds && start <= de;
+  const endsToday = end >= ds && end <= de;
+
+  // If it spans across this day, show a nicer label
+  let timeLabel = "";
+  if (startsToday && endsToday) timeLabel = `${format(start, "HH:mm")}–${format(end, "HH:mm")}`;
+  else if (startsToday && !endsToday) timeLabel = `${format(start, "HH:mm")}–…`;
+  else if (!startsToday && endsToday) timeLabel = `…–${format(end, "HH:mm")}`;
+  else timeLabel = `All day (span)`;
 
   return (
     <div className="task" onClick={onClick} title="Click to edit">
       <div className="taskTitle">{task.title}</div>
       <div className="taskMeta">
-        {compact
-          ? `${format(start, "HH:mm")} • ${task.status}`
-          : `${format(start, "HH:mm")}–${format(end, "HH:mm")} • ${task.task_size} • ${task.status}`}
+        {compact ? `${timeLabel} • ${task.status}` : `${timeLabel} • ${task.task_size} • ${task.status}`}
       </div>
       {!compact && <div className="taskMeta">{who || "Unassigned"}</div>}
     </div>

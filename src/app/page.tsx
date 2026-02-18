@@ -53,7 +53,7 @@ export default function Page() {
   const [peopleForTeam, setPeopleForTeam] = useState<Person[]>([]);
 
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [availability, setAvailability] = useStateny[]>([]);
+  const [availability, setAvailability] = useStateny<any[]>([]);
 
   const [weekStart, setWeekStart] = useState<Date>(() => startOfWeek(new Date(), { weekStartsOn: 1 }));
   const [monthAnchor, setMonthAnchor] = useState<Date>(() => startOfMonth(new Date()));

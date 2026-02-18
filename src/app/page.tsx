@@ -53,7 +53,7 @@ export default function Page() {
   const [peopleForTeam, setPeopleForTeam] = useState<Person[]>([]);
 
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [availability, setAvailability] = useState<any[]>([]);
+  const [availability, setAvailability] = useStateny[]>([]);
 
   const [weekStart, setWeekStart] = useState<Date>(() => startOfWeek(new Date(), { weekStartsOn: 1 }));
   const [monthAnchor, setMonthAnchor] = useState<Date>(() => startOfMonth(new Date()));
@@ -351,7 +351,15 @@ export default function Page() {
           <h1>VT Multi-Team Scheduler</h1>
           <div className="sub">
             Overview + team calendars •{" "}
-            <a href="./admin/">Admin (people/teams)</a>
+            <a
+  href="#"
+  onClick={(e) => {
+    e.preventDefault();
+    window.location.href = "./admin/?v=" + Date.now();
+  }}
+>
+  Admin (people/teams)
+</a>
           </div>
         </div>
 

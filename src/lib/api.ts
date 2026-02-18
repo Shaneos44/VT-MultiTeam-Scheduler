@@ -124,12 +124,43 @@ export async function getAvailability(teamId: string, windowStartISO: string, wi
  * Optional conflict check (requires function get_person_tasks_in_window to exist).
  * If it doesn't exist, we return null and the UI just won't show conflict warnings.
  */
-export async function getPersonTasksInWindow(personId: string, windowStartISO: string, windowEndISO: string) {
-  const { data, error } = await supabase.rpc("get_person_tasks_in_window", {
-    p_person_id: personId,
-    p_window_start: windowStartISO,
-    p_window_end: windowEndISO
-  });
-  if (error) return null; // graceful fallback
-  return data ?? [];
+export async function fetchTasksForTeam(teamId: string, windowStartISO: string, windowEndISO: string) {
+  // 1) Get tasks in window
+  const { data: taskRows, error: tErr } = await supabase
+    .from("tasks")
+    .select("id,title,team_id,project_id,start_at,end_at,task_size,status,notes")
+    .eq("team_id", teamId)
+    .lt("start_at", windowEndISO)
+    .gt("end_at", windowStartISO)
+    .neq("status", "cancelled")
+    .order("start_at");
+
+  if (tErr) throw tErr;
+  const tasks = taskRows ?? [];
+  if (!tasks.length) return [];
+
+  const taskIds = tasks.map(t => t.id);
+
+  // 2) Get task_assignees for those tasks
+  const { data: taRows, error: taErr } = await supabase
+    .from("task_assignees")
+    .select("task_id, people(id,name)")
+    .in("task_id", taskIds);
+
+  if (taErr) throw taErr;
+
+  // 3) Attach assignees to tasks in the same shape the UI expects
+  const map: Record<string, { person_id: string; name: string }[]> = {};
+  for (const r of (taRows ?? []) as any[]) {
+    const p = r.people;
+    if (!p) continue;
+    if (!map[r.task_id]) map[r.task_id] = [];
+    map[r.task_id].push({ person_id: p.id, name: p.name });
+  }
+
+  return tasks.map(t => ({
+    ...t,
+    assignees: map[t.id] ?? []
+  }));
 }
+

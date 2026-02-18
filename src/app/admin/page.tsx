@@ -20,7 +20,7 @@ import {
   getAvailability,
   getPersonTasksInWindow,
   updateTask
-} from "../lib/api";
+} from "../../lib/api";
 
 type Team = { id: string; name: string };
 type Person = { id: string; name: string; daily_capacity_hours: number };

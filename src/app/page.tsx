@@ -8,7 +8,7 @@ import {
   format,
   startOfMonth,
   startOfWeek,
-  subMonths,
+  subMonths
 } from "date-fns";
 
 import {
@@ -22,82 +22,53 @@ import {
   getAvailability,
   getPersonTasksInWindow,
   updateTask,
+  type Team,
+  type Person
 } from "../lib/api";
-
-type Team = { id: string; name: string };
-type Person = { id: string; name: string; daily_capacity_hours: number };
-type Task = any;
 
 type ViewMode = "week" | "month";
 type ScopeMode = "team" | "all";
+type Task = any;
 
 const TASK_SIZES = ["hourly", "half_day", "full_day", "custom"] as const;
 const STATUSES = ["planned", "in_progress", "done", "cancelled"] as const;
 
-function iso(d: Date) {
-  return d.toISOString();
-}
-
-// datetime-local helpers
-function dtLocalToIso(v: string) {
-  const d = new Date(v);
-  return d.toISOString();
-}
+function iso(d: Date) { return d.toISOString(); }
+function dtLocalToIso(v: string) { return new Date(v).toISOString(); }
 function isoToDtLocal(isoStr: string) {
   const d = new Date(isoStr);
   const pad = (n: number) => String(n).padStart(2, "0");
-  const yyyy = d.getFullYear();
-  const mm = pad(d.getMonth() + 1);
-  const dd = pad(d.getDate());
-  const hh = pad(d.getHours());
-  const mi = pad(d.getMinutes());
-  return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
-
-function sameDay(a: Date, b: Date) {
-  return a.toDateString() === b.toDateString();
-}
+function sameDay(a: Date, b: Date) { return a.toDateString() === b.toDateString(); }
 
 export default function Page() {
-  // Core data
   const [teams, setTeams] = useState<Team[]>([]);
-  const [teamId, setTeamId] = useState<string>("");
+  const [teamId, setTeamId] = useState("");
 
-  // Scope + view
   const [scope, setScope] = useState<ScopeMode>("team");
   const [viewMode, setViewMode] = useState<ViewMode>("week");
 
-  // People list for filters + admin use
   const [peopleAll, setPeopleAll] = useState<Person[]>([]);
-  // People list for the currently selected team (for filter convenience)
   const [peopleForTeam, setPeopleForTeam] = useState<Person[]>([]);
 
-  // Tasks for the current window (team or all teams)
   const [tasks, setTasks] = useState<Task[]>([]);
   const [availability, setAvailability] = useState<any[]>([]);
 
-  // Date anchors
-  const [weekStart, setWeekStart] = useState<Date>(() =>
-    startOfWeek(new Date(), { weekStartsOn: 1 })
-  );
-  const [monthAnchor, setMonthAnchor] = useState<Date>(() =>
-    startOfMonth(new Date())
-  );
+  const [weekStart, setWeekStart] = useState<Date>(() => startOfWeek(new Date(), { weekStartsOn: 1 }));
+  const [monthAnchor, setMonthAnchor] = useState<Date>(() => startOfMonth(new Date()));
 
-  // UI
   const [loading, setLoading] = useState(false);
-  const [banner, setBanner] = useState<string>("");
+  const [banner, setBanner] = useState("");
 
-  // Filters
-  const [personFilter, setPersonFilter] = useState<string>("all");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [personFilter, setPersonFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
 
   // Modal
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Task | null>(null);
 
-  // Form fields
-  const [fTeamId, setFTeamId] = useState<string>(""); // important for "All teams" creates
+  const [fTeamId, setFTeamId] = useState("");
   const [fTitle, setFTitle] = useState("");
   const [fStart, setFStart] = useState("");
   const [fEnd, setFEnd] = useState("");
@@ -105,37 +76,10 @@ export default function Page() {
   const [fStatus, setFStatus] = useState<(typeof STATUSES)[number]>("planned");
   const [fNotes, setFNotes] = useState("");
   const [fAssignees, setFAssignees] = useState<string[]>([]);
-
-  // For assignee selector, show members of the chosen team
   const [peopleForFormTeam, setPeopleForFormTeam] = useState<Person[]>([]);
 
-  // Conflicts (optional)
   const [conflicts, setConflicts] = useState<Record<string, any[]>>({});
   const [checkingConflicts, setCheckingConflicts] = useState(false);
-
-  // Windows
-  const weekEnd = useMemo(() => addDays(weekStart, 7), [weekStart]);
-  const weekDays = useMemo(
-    () => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)),
-    [weekStart]
-  );
-
-  const monthStart = useMemo(() => startOfMonth(monthAnchor), [monthAnchor]);
-  const monthGridStart = useMemo(
-    () => startOfWeek(monthStart, { weekStartsOn: 1 }),
-    [monthStart]
-  );
-  const monthCells = useMemo(
-    () => Array.from({ length: 42 }, (_, i) => addDays(monthGridStart, i)),
-    [monthGridStart]
-  );
-
-  const currentWindow = useMemo(() => {
-    if (viewMode === "week") {
-      return { start: weekStart, end: weekEnd };
-    }
-    return { start: monthGridStart, end: addDays(monthGridStart, 42) };
-  }, [viewMode, weekStart, weekEnd, monthGridStart]);
 
   const teamNameById = useMemo(() => {
     const m: Record<string, string> = {};
@@ -143,11 +87,19 @@ export default function Page() {
     return m;
   }, [teams]);
 
-  const peopleOptionsForFilter = useMemo<Person[]>(() => {
-    return scope === "all" ? peopleAll : peopleForTeam;
-  }, [scope, peopleAll, peopleForTeam]);
+  const weekEnd = useMemo(() => addDays(weekStart, 7), [weekStart]);
+  const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
 
-  // Load base: teams + all people
+  const monthStart = useMemo(() => startOfMonth(monthAnchor), [monthAnchor]);
+  const monthGridStart = useMemo(() => startOfWeek(monthStart, { weekStartsOn: 1 }), [monthStart]);
+  const monthCells = useMemo(() => Array.from({ length: 42 }, (_, i) => addDays(monthGridStart, i)), [monthGridStart]);
+
+  const windowStart = useMemo(() => (viewMode === "week" ? weekStart : monthGridStart), [viewMode, weekStart, monthGridStart]);
+  const windowEnd = useMemo(() => (viewMode === "week" ? weekEnd : addDays(monthGridStart, 42)), [viewMode, weekEnd, monthGridStart]);
+
+  const peopleOptionsForFilter = useMemo(() => (scope === "all" ? peopleAll : peopleForTeam), [scope, peopleAll, peopleForTeam]);
+
+  // Initial load
   useEffect(() => {
     (async () => {
       try {
@@ -161,7 +113,7 @@ export default function Page() {
     })();
   }, []);
 
-  // Keep team people list updated
+  // Selected team people
   useEffect(() => {
     if (!teamId) return;
     (async () => {
@@ -180,19 +132,17 @@ export default function Page() {
     setBanner("");
 
     try {
-      // tasks
-      const ids = scope === "all" ? teams.map((t) => t.id) : [teamId];
+      const ids = scope === "all" ? teams.map(t => t.id) : [teamId];
 
       const tsk =
         scope === "all"
-          ? await fetchTasksForTeams(ids, iso(currentWindow.start), iso(currentWindow.end))
-          : await fetchTasksForTeam(teamId, iso(currentWindow.start), iso(currentWindow.end));
+          ? await fetchTasksForTeams(ids, iso(windowStart), iso(windowEnd))
+          : await fetchTasksForTeam(teamId, iso(windowStart), iso(windowEnd));
 
       setTasks(tsk);
 
-      // availability panel (only meaningful for a single team scope)
       if (scope === "team") {
-        const avail = await getAvailability(teamId, iso(currentWindow.start), iso(currentWindow.end));
+        const avail = await getAvailability(teamId, iso(windowStart), iso(windowEnd));
         setAvailability(avail);
       } else {
         setAvailability([]);
@@ -204,7 +154,6 @@ export default function Page() {
     }
   }
 
-  // Reload when scope/view/window/team/teams list changes
   useEffect(() => {
     if (!teamId) return;
     if (scope === "all" && teams.length === 0) return;
@@ -212,9 +161,8 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [teamId, scope, viewMode, weekStart, monthAnchor, teams.length]);
 
-  // Filtered tasks
   const filteredTasks = useMemo(() => {
-    return (tasks ?? []).filter((t) => {
+    return (tasks ?? []).filter(t => {
       const statusOk = statusFilter === "all" ? true : t.status === statusFilter;
       const personOk =
         personFilter === "all"
@@ -224,10 +172,9 @@ export default function Page() {
     });
   }, [tasks, personFilter, statusFilter]);
 
-  // Day helper
   function tasksForDay(d: Date) {
     return filteredTasks
-      .filter((t) => sameDay(new Date(t.start_at), d))
+      .filter(t => sameDay(new Date(t.start_at), d))
       .sort((a, b) => +new Date(a.start_at) - +new Date(b.start_at));
   }
 
@@ -239,18 +186,13 @@ export default function Page() {
       if (!groups[tid]) groups[tid] = [];
       groups[tid].push(t);
     }
-    const orderedTeamIds = Object.keys(groups).sort((a, b) => {
-      const an = teamNameById[a] ?? a;
-      const bn = teamNameById[b] ?? b;
-      return an.localeCompare(bn);
-    });
-    return orderedTeamIds.map((tid) => ({ teamId: tid, teamName: teamNameById[tid] ?? tid, tasks: groups[tid] }));
+    const orderedTeamIds = Object.keys(groups).sort((a, b) => (teamNameById[a] ?? a).localeCompare(teamNameById[b] ?? b));
+    return orderedTeamIds.map(tid => ({ teamId: tid, teamName: teamNameById[tid] ?? tid, tasks: groups[tid] }));
   }
 
-  // Modal helpers
-  async function syncPeopleForFormTeam(team_id: string) {
+  async function syncPeopleForFormTeam(tid: string) {
     try {
-      const ppl = await fetchPeopleForTeam(team_id);
+      const ppl = await fetchPeopleForTeam(tid);
       setPeopleForFormTeam(ppl);
     } catch {
       setPeopleForFormTeam([]);
@@ -260,16 +202,15 @@ export default function Page() {
   function openCreate(prefillDay?: Date) {
     setEditing(null);
     setConflicts({});
-    setFTitle("");
-    setFNotes("");
     setFAssignees([]);
+    setFNotes("");
+    setFTitle("");
 
     const chosenTeam = teamId;
     setFTeamId(chosenTeam);
-    // fetch assignees list for chosen team
     syncPeopleForFormTeam(chosenTeam);
 
-    const start = prefillDay ? new Date(prefillDay) : new Date(viewMode === "week" ? weekStart : monthAnchor);
+    const start = prefillDay ? new Date(prefillDay) : new Date(windowStart);
     start.setHours(9, 0, 0, 0);
     const end = new Date(start);
     end.setHours(10, 0, 0, 0);
@@ -292,9 +233,9 @@ export default function Page() {
     setFNotes(task.notes ?? "");
     setFAssignees((task.assignees ?? []).map((a: any) => a.person_id));
 
-    const tId = task.team_id ?? teamId;
-    setFTeamId(tId);
-    syncPeopleForFormTeam(tId);
+    const tid = task.team_id ?? teamId;
+    setFTeamId(tid);
+    syncPeopleForFormTeam(tid);
 
     setModalOpen(true);
   }
@@ -320,7 +261,6 @@ export default function Page() {
       for (const pid of fAssignees) {
         const list = await getPersonTasksInWindow(pid, ws, we);
         if (!list) continue;
-
         const filtered = list.filter((x: any) => x.task_id !== editing?.id);
         if (filtered.length) results[pid] = filtered;
       }
@@ -340,12 +280,10 @@ export default function Page() {
     const endISO = dtLocalToIso(fEnd);
     if (new Date(endISO) <= new Date(startISO)) return setBanner("End must be after Start.");
 
-    // conflict check (warn only)
     await checkConflicts();
 
     try {
       if (editing) {
-        // NOTE: updateTask currently doesn't change team_id (keeps tasks stable)
         await updateTask(editing.id, {
           title: fTitle.trim(),
           start_at: startISO,
@@ -353,7 +291,7 @@ export default function Page() {
           task_size: fSize,
           status: fStatus,
           notes: fNotes,
-          assigneeIds: fAssignees,
+          assigneeIds: fAssignees
         });
       } else {
         await createTask({
@@ -364,7 +302,7 @@ export default function Page() {
           task_size: fSize,
           status: fStatus,
           notes: fNotes,
-          assigneeIds: fAssignees,
+          assigneeIds: fAssignees
         });
       }
 
@@ -387,7 +325,6 @@ export default function Page() {
     }
   }
 
-  // Navigation controls
   function goPrev() {
     if (viewMode === "week") setWeekStart(addDays(weekStart, -7));
     else setMonthAnchor(subMonths(monthAnchor, 1));
@@ -408,314 +345,237 @@ export default function Page() {
       : format(monthAnchor, "MMMM yyyy");
 
   return (
-    <main style={{ padding: 16, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-            <h1 style={{ fontSize: 22, fontWeight: 900, margin: 0 }}>VT Multi-Team Scheduler</h1>
-            <span style={{ color: "#666", fontSize: 13 }}>(GitHub Pages UI + Supabase)</span>
-          </div>
-          <div style={{ marginTop: 6, fontSize: 13, color: "#666" }}>
-            Admin: <a href="./admin/">manage people + team membership</a>
+    <div className="container">
+      <div className="topbar">
+        <div className="brand">
+          <h1>VT Multi-Team Scheduler</h1>
+          <div className="sub">
+            Overview + team calendars •{" "}
+            <a href="./admin/">Admin (people/teams)</a>
           </div>
         </div>
 
-        <div style={{ alignSelf: "center", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          {loading && <span style={{ color: "#666", fontSize: 13 }}>Loading…</span>}
-          <button onClick={() => openCreate()} style={{ fontWeight: 900 }}>
+        <div className="nav">
+          <span className="pill">{loading ? "Loading…" : "Ready"}</span>
+          <button className="btn primary" onClick={() => openCreate()}>
             + New task
           </button>
         </div>
       </div>
 
-      {banner && (
-        <div style={{ marginTop: 12, padding: 10, border: "1px solid #f3d1d1", background: "#fff5f5", borderRadius: 12 }}>
-          <b>Note:</b> {banner}
-        </div>
-      )}
+      {banner && <div className="banner">{banner}</div>}
 
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 12 }}>
-        <label>
-          Team:&nbsp;
-          <select
-            value={teamId}
-            onChange={(e) => setTeamId(e.target.value)}
-            disabled={teams.length === 0}
-            title="Used for 'Selected team' scope and default team in New Task"
-          >
-            {teams.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        </label>
+      <div className="card">
+        <div className="card-body">
+          <div className="row">
+            <label className="label" style={{ minWidth: 220 }}>
+              Team
+              <select className="select" value={teamId} onChange={e => setTeamId(e.target.value)}>
+                {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </label>
 
-        <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          Scope:&nbsp;
-          <select value={scope} onChange={(e) => setScope(e.target.value as ScopeMode)}>
-            <option value="team">Selected team</option>
-            <option value="all">All teams</option>
-          </select>
-        </label>
+            <label className="label" style={{ minWidth: 180 }}>
+              Scope
+              <select className="select" value={scope} onChange={e => setScope(e.target.value as ScopeMode)}>
+                <option value="team">Selected team</option>
+                <option value="all">All teams</option>
+              </select>
+            </label>
 
-        <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          View:&nbsp;
-          <select value={viewMode} onChange={(e) => setViewMode(e.target.value as ViewMode)}>
-            <option value="week">Week</option>
-            <option value="month">Month</option>
-          </select>
-        </label>
+            <label className="label" style={{ minWidth: 160 }}>
+              View
+              <select className="select" value={viewMode} onChange={e => setViewMode(e.target.value as ViewMode)}>
+                <option value="week">Week</option>
+                <option value="month">Month</option>
+              </select>
+            </label>
 
-        <button onClick={goPrev}>◀</button>
-        <button onClick={goToday}>Today</button>
-        <button onClick={goNext}>▶</button>
-
-        <div style={{ fontWeight: 900 }}>{headerLabel}</div>
-      </div>
-
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
-        <label style={{ fontSize: 13, color: "#444" }}>
-          Filter person:&nbsp;
-          <select value={personFilter} onChange={(e) => setPersonFilter(e.target.value)}>
-            <option value="all">All</option>
-            {peopleOptionsForFilter.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label style={{ fontSize: 13, color: "#444" }}>
-          Filter status:&nbsp;
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-            <option value="all">All</option>
-            {STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14, marginTop: 14 }}>
-        {/* Schedule */}
-        <section style={{ border: "1px solid #ddd", borderRadius: 16, padding: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-            <h2 style={{ fontSize: 16, fontWeight: 900, margin: 0 }}>
-              {scope === "all" ? "Overview (all teams)" : "Schedule"}
-            </h2>
-            <span style={{ fontSize: 12, color: "#666" }}>
-              Click day header to add • click a task to edit
-            </span>
+            <div className="row" style={{ marginTop: 18 }}>
+              <button className="btn" onClick={goPrev}>◀</button>
+              <button className="btn" onClick={goToday}>Today</button>
+              <button className="btn" onClick={goNext}>▶</button>
+              <span className="pill" style={{ marginLeft: 6 }}>{headerLabel}</span>
+            </div>
           </div>
 
-          {viewMode === "week" ? (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginTop: 10 }}>
-              {weekDays.map((d) => {
-                if (scope === "team") {
-                  const dayTasks = tasksForDay(d);
-                  return (
-                    <div key={d.toISOString()} style={cardCol}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                        <button onClick={() => openCreate(d)} style={dayHeaderBtn} title="Add task on this day">
-                          {format(d, "EEE dd")}
-                        </button>
-                        <span style={{ fontSize: 12, color: "#666" }}>{dayTasks.length}</span>
-                      </div>
+          <div className="row" style={{ marginTop: 10 }}>
+            <label className="label" style={{ minWidth: 260 }}>
+              Filter person
+              <select className="select" value={personFilter} onChange={e => setPersonFilter(e.target.value)}>
+                <option value="all">All</option>
+                {peopleOptionsForFilter.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </label>
 
-                      {dayTasks.map((t) => (
-                        <TaskPill key={t.id} task={t} onClick={() => openEdit(t)} />
-                      ))}
+            <label className="label" style={{ minWidth: 200 }}>
+              Filter status
+              <select className="select" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+                <option value="all">All</option>
+                {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </label>
+          </div>
+        </div>
+      </div>
 
-                      {dayTasks.length === 0 && <div style={{ color: "#777", fontSize: 13 }}>No tasks</div>}
-                    </div>
-                  );
-                }
-
-                // All teams: grouped
-                const groups = groupedTasksForDay(d);
-                const total = groups.reduce((acc, g) => acc + g.tasks.length, 0);
-
-                return (
-                  <div key={d.toISOString()} style={cardCol}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                      <button onClick={() => openCreate(d)} style={dayHeaderBtn} title="Add task on this day">
-                        {format(d, "EEE dd")}
-                      </button>
-                      <span style={{ fontSize: 12, color: "#666" }}>{total}</span>
-                    </div>
-
-                    {groups.map((g) => (
-                      <div key={g.teamId} style={{ marginBottom: 10 }}>
-                        <div style={{ fontSize: 12, fontWeight: 900, color: "#666", marginBottom: 6 }}>
-                          {g.teamName}
-                        </div>
-                        {g.tasks.map((t) => (
-                          <TaskPill key={t.id} task={t} onClick={() => openEdit(t)} />
-                        ))}
-                      </div>
-                    ))}
-
-                    {total === 0 && <div style={{ color: "#777", fontSize: 13 }}>No tasks</div>}
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <>
-              {/* Month header */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginTop: 10 }}>
-                {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
-                  <div key={d} style={{ fontSize: 12, fontWeight: 900, color: "#666", paddingLeft: 4 }}>
-                    {d}
-                  </div>
-                ))}
-              </div>
-
-              {/* Month grid */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginTop: 8 }}>
-                {monthCells.map((d, idx) => {
-                  const inMonth = d.getMonth() === monthStart.getMonth();
-                  const list = tasksForDay(d);
-
+      <div className="grid grid-2" style={{ marginTop: 14 }}>
+        <div className="card">
+          <div className="card-header">
+            <h2>{scope === "all" ? "Overall calendar (all teams)" : "Team calendar"}</h2>
+            <span className="small">Click day to add • click task to edit</span>
+          </div>
+          <div className="card-body">
+            {viewMode === "week" ? (
+              <div className="dayGrid">
+                {weekDays.map(d => {
                   if (scope === "team") {
-                    const maxShow = 4;
+                    const dayTasks = tasksForDay(d);
                     return (
-                      <div
-                        key={`${d.toISOString()}_${idx}`}
-                        style={{ ...cardCol, minHeight: 160, opacity: inMonth ? 1 : 0.55 }}
-                      >
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                          <button onClick={() => openCreate(d)} style={dayHeaderBtn} title="Add task on this day">
-                            {format(d, "d")}
-                          </button>
-                          <span style={{ fontSize: 12, color: "#666" }}>{list.length}</span>
+                      <div key={d.toISOString()} className="dayCol">
+                        <div className="dayTop">
+                          <button className="dayBtn" onClick={() => openCreate(d)}>{format(d, "EEE dd")}</button>
+                          <span className="count">{dayTasks.length}</span>
                         </div>
-
-                        {list.slice(0, maxShow).map((t) => (
-                          <TaskPill key={t.id} task={t} onClick={() => openEdit(t)} compact />
-                        ))}
-
-                        {list.length > maxShow && (
-                          <div style={{ fontSize: 12, color: "#666" }}>+{list.length - maxShow} more</div>
-                        )}
-
-                        {list.length === 0 && <div style={{ color: "#777", fontSize: 12 }}>—</div>}
+                        {dayTasks.map(t => <TaskCard key={t.id} task={t} onClick={() => openEdit(t)} />)}
+                        {dayTasks.length === 0 && <div className="small">No tasks</div>}
                       </div>
                     );
                   }
 
-                  // All teams: show up to N per team for readability
                   const groups = groupedTasksForDay(d);
                   const total = groups.reduce((acc, g) => acc + g.tasks.length, 0);
-                  const maxTeamsShow = 3;
-                  const maxPerTeam = 2;
-
                   return (
-                    <div
-                      key={`${d.toISOString()}_${idx}`}
-                      style={{ ...cardCol, minHeight: 160, opacity: inMonth ? 1 : 0.55 }}
-                    >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                        <button onClick={() => openCreate(d)} style={dayHeaderBtn} title="Add task on this day">
-                          {format(d, "d")}
-                        </button>
-                        <span style={{ fontSize: 12, color: "#666" }}>{total}</span>
+                    <div key={d.toISOString()} className="dayCol">
+                      <div className="dayTop">
+                        <button className="dayBtn" onClick={() => openCreate(d)}>{format(d, "EEE dd")}</button>
+                        <span className="count">{total}</span>
                       </div>
 
-                      {groups.slice(0, maxTeamsShow).map((g) => (
-                        <div key={g.teamId} style={{ marginBottom: 8 }}>
-                          <div style={{ fontSize: 11, fontWeight: 900, color: "#666", marginBottom: 4 }}>
-                            {g.teamName}
-                          </div>
-                          {g.tasks.slice(0, maxPerTeam).map((t) => (
-                            <TaskPill key={t.id} task={t} onClick={() => openEdit(t)} compact />
-                          ))}
-                          {g.tasks.length > maxPerTeam && (
-                            <div style={{ fontSize: 11, color: "#666" }}>+{g.tasks.length - maxPerTeam}</div>
-                          )}
+                      {groups.map(g => (
+                        <div key={g.teamId} style={{ marginBottom: 10 }}>
+                          <div className="small" style={{ fontWeight: 900, marginBottom: 6 }}>{g.teamName}</div>
+                          {g.tasks.map(t => <TaskCard key={t.id} task={t} onClick={() => openEdit(t)} />)}
                         </div>
                       ))}
 
-                      {groups.length > maxTeamsShow && (
-                        <div style={{ fontSize: 12, color: "#666" }}>
-                          +{groups.length - maxTeamsShow} teams
-                        </div>
-                      )}
-
-                      {total === 0 && <div style={{ color: "#777", fontSize: 12 }}>—</div>}
+                      {total === 0 && <div className="small">No tasks</div>}
                     </div>
                   );
                 })}
               </div>
-            </>
-          )}
-        </section>
+            ) : (
+              <>
+                <div className="dayGrid" style={{ marginBottom: 8 }}>
+                  {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d => (
+                    <div key={d} className="small" style={{ fontWeight: 900, paddingLeft: 6 }}>{d}</div>
+                  ))}
+                </div>
 
-        {/* Sidebar */}
-        <section style={{ border: "1px solid #ddd", borderRadius: 16, padding: 12 }}>
-          <h2 style={{ fontSize: 16, fontWeight: 900, margin: 0 }}>
-            {scope === "team" ? "Who’s free" : "Overview notes"}
-          </h2>
+                <div className="dayGrid">
+                  {monthCells.map((d, idx) => {
+                    const inMonth = d.getMonth() === monthStart.getMonth();
+                    const list = tasksForDay(d);
 
-          {scope === "team" ? (
-            <>
-              <div style={{ fontSize: 13, color: "#666", marginTop: 6, marginBottom: 10 }}>
-                Sorted by least scheduled hours in the current window.
-              </div>
+                    if (scope === "team") {
+                      const maxShow = 4;
+                      return (
+                        <div key={`${d.toISOString()}_${idx}`} className="dayCol" style={{ opacity: inMonth ? 1 : 0.55, minHeight: 160 }}>
+                          <div className="dayTop">
+                            <button className="dayBtn" onClick={() => openCreate(d)}>{format(d, "d")}</button>
+                            <span className="count">{list.length}</span>
+                          </div>
+                          {list.slice(0, maxShow).map(t => <TaskCard key={t.id} task={t} compact onClick={() => openEdit(t)} />)}
+                          {list.length > maxShow && <div className="small">+{list.length - maxShow} more</div>}
+                          {list.length === 0 && <div className="small">—</div>}
+                        </div>
+                      );
+                    }
 
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    const groups = groupedTasksForDay(d);
+                    const total = groups.reduce((acc, g) => acc + g.tasks.length, 0);
+                    const maxTeamsShow = 3;
+                    const maxPerTeam = 2;
+
+                    return (
+                      <div key={`${d.toISOString()}_${idx}`} className="dayCol" style={{ opacity: inMonth ? 1 : 0.55, minHeight: 160 }}>
+                        <div className="dayTop">
+                          <button className="dayBtn" onClick={() => openCreate(d)}>{format(d, "d")}</button>
+                          <span className="count">{total}</span>
+                        </div>
+
+                        {groups.slice(0, maxTeamsShow).map(g => (
+                          <div key={g.teamId} style={{ marginBottom: 8 }}>
+                            <div className="small" style={{ fontWeight: 900, marginBottom: 4 }}>{g.teamName}</div>
+                            {g.tasks.slice(0, maxPerTeam).map(t => (
+                              <TaskCard key={t.id} task={t} compact onClick={() => openEdit(t)} />
+                            ))}
+                            {g.tasks.length > maxPerTeam && <div className="small">+{g.tasks.length - maxPerTeam}</div>}
+                          </div>
+                        ))}
+
+                        {groups.length > maxTeamsShow && <div className="small">+{groups.length - maxTeamsShow} teams</div>}
+                        {total === 0 && <div className="small">—</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <h2>{scope === "team" ? "Availability" : "Overview tips"}</h2>
+          </div>
+          <div className="card-body">
+            {scope === "team" ? (
+              <>
+                <div className="small" style={{ marginBottom: 10 }}>
+                  “Who’s free” is calculated for the selected team in the current window.
+                </div>
                 {availability.map((a: any) => (
-                  <div key={a.person_id} style={{ border: "1px solid #eee", borderRadius: 14, padding: 10 }}>
-                    <div style={{ fontWeight: 900 }}>{a.name}</div>
-                    <div style={{ fontSize: 13 }}>
+                  <div key={a.person_id} className="task" style={{ cursor: "default" }}>
+                    <div className="taskTitle">{a.name}</div>
+                    <div className="taskMeta">
                       Scheduled: <b>{Number(a.scheduled_hours).toFixed(2)}h</b> • Daily cap: {a.daily_capacity_hours}h
                     </div>
                   </div>
                 ))}
-                {availability.length === 0 && (
-                  <div style={{ color: "#777", fontSize: 13 }}>No people found for this team.</div>
-                )}
+                {availability.length === 0 && <div className="small">No people found for this team.</div>}
+              </>
+            ) : (
+              <div className="small" style={{ lineHeight: 1.5 }}>
+                You’re viewing <b>All teams</b>.
+                <div className="hr" />
+                Use filters (person/status) to narrow down.  
+                For capacity (“who’s free”), switch scope back to <b>Selected team</b>.
               </div>
-            </>
-          ) : (
-            <div style={{ marginTop: 10, fontSize: 13, color: "#666", lineHeight: 1.4 }}>
-              You’re in <b>All teams</b> scope.
-              <ul style={{ marginTop: 8 }}>
-                <li>Tasks are grouped by team inside each day.</li>
-                <li>Use filters to narrow by person/status.</li>
-                <li>For capacity (“who’s free”), switch scope back to <b>Selected team</b>.</li>
-              </ul>
-            </div>
-          )}
-        </section>
+            )}
+          </div>
+        </div>
       </div>
 
-      {/* Modal */}
       {modalOpen && (
-        <div onClick={() => setModalOpen(false)} style={modalBackdrop}>
-          <div onClick={(e) => e.stopPropagation()} style={modalCard}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
+        <div className="modalBack" onClick={() => setModalOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modalTop">
               <div>
-                <div style={{ fontWeight: 900, fontSize: 16 }}>
-                  {editing ? "Edit task" : "New task"}
-                </div>
-                <div style={{ color: "#666", fontSize: 12 }}>
-                  Times render in your browser timezone.
-                </div>
+                <h3>{editing ? "Edit task" : "New task"}</h3>
+                <div className="small">Times use your browser timezone.</div>
               </div>
-              <button onClick={() => setModalOpen(false)}>✕</button>
+              <button className="btn ghost" onClick={() => setModalOpen(false)}>✕</button>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12, marginTop: 12 }}>
-              {/* Left */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <label style={{ fontSize: 13 }}>
+            <div className="hr" />
+
+            <div className="grid" style={{ gridTemplateColumns: "2fr 1fr" }}>
+              <div className="grid" style={{ gap: 10 }}>
+                <label className="label">
                   Team
                   <select
+                    className="select"
                     value={fTeamId}
                     onChange={async (e) => {
                       const id = e.target.value;
@@ -724,139 +584,100 @@ export default function Page() {
                       setConflicts({});
                       await syncPeopleForFormTeam(id);
                     }}
-                    style={inputStyle as any}
-                    disabled={!!editing} // keep team fixed on edit (safe default)
+                    disabled={!!editing}
                     title={editing ? "Team is fixed for existing tasks." : "Choose which team owns this task."}
                   >
-                    {teams.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name}
-                      </option>
-                    ))}
+                    {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </select>
                 </label>
 
-                <label style={{ fontSize: 13 }}>
+                <label className="label">
                   Task name
-                  <input value={fTitle} onChange={(e) => setFTitle(e.target.value)} style={inputStyle} />
+                  <input className="input" value={fTitle} onChange={e => setFTitle(e.target.value)} />
                 </label>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <label style={{ fontSize: 13 }}>
+                <div className="row">
+                  <label className="label" style={{ minWidth: 220 }}>
                     Start
-                    <input
-                      type="datetime-local"
-                      value={fStart}
-                      onChange={(e) => setFStart(e.target.value)}
-                      style={inputStyle}
-                    />
+                    <input className="input" type="datetime-local" value={fStart} onChange={e => setFStart(e.target.value)} />
                   </label>
-                  <label style={{ fontSize: 13 }}>
+                  <label className="label" style={{ minWidth: 220 }}>
                     End
-                    <input
-                      type="datetime-local"
-                      value={fEnd}
-                      onChange={(e) => setFEnd(e.target.value)}
-                      style={inputStyle}
-                    />
+                    <input className="input" type="datetime-local" value={fEnd} onChange={e => setFEnd(e.target.value)} />
                   </label>
                 </div>
 
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button onClick={() => applyPreset("hourly")}>1h</button>
-                  <button onClick={() => applyPreset("half_day")}>Half-day</button>
-                  <button onClick={() => applyPreset("full_day")}>Full-day</button>
-                  <button onClick={() => setFSize("custom")}>Custom</button>
+                <div className="row">
+                  <button className="btn" onClick={() => applyPreset("hourly")}>1h</button>
+                  <button className="btn" onClick={() => applyPreset("half_day")}>Half-day</button>
+                  <button className="btn" onClick={() => applyPreset("full_day")}>Full-day</button>
+                  <button className="btn" onClick={() => setFSize("custom")}>Custom</button>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <label style={{ fontSize: 13 }}>
+                <div className="row">
+                  <label className="label" style={{ minWidth: 200 }}>
                     Task size
-                    <select value={fSize} onChange={(e) => setFSize(e.target.value as any)} style={inputStyle as any}>
-                      {TASK_SIZES.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
-                      ))}
+                    <select className="select" value={fSize} onChange={e => setFSize(e.target.value as any)}>
+                      {TASK_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                   </label>
 
-                  <label style={{ fontSize: 13 }}>
+                  <label className="label" style={{ minWidth: 200 }}>
                     Status
-                    <select value={fStatus} onChange={(e) => setFStatus(e.target.value as any)} style={inputStyle as any}>
-                      {STATUSES.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
-                      ))}
+                    <select className="select" value={fStatus} onChange={e => setFStatus(e.target.value as any)}>
+                      {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                   </label>
                 </div>
 
-                <label style={{ fontSize: 13 }}>
+                <label className="label">
                   Notes
-                  <textarea
-                    value={fNotes}
-                    onChange={(e) => setFNotes(e.target.value)}
-                    style={{ ...inputStyle, minHeight: 90 }}
-                  />
+                  <textarea className="textarea" value={fNotes} onChange={e => setFNotes(e.target.value)} />
                 </label>
               </div>
 
-              {/* Right */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ fontWeight: 900, fontSize: 13 }}>Assignees (team members)</div>
+              <div className="grid" style={{ gap: 10 }}>
+                <div className="small" style={{ fontWeight: 900 }}>Assignees (team members)</div>
 
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 6,
-                    maxHeight: 260,
-                    overflow: "auto",
-                    border: "1px solid #eee",
-                    borderRadius: 12,
-                    padding: 10,
-                  }}
-                >
-                  {peopleForFormTeam.map((p) => {
+                <div className="card" style={{ padding: 10, maxHeight: 300, overflow: "auto" }}>
+                  {peopleForFormTeam.map(p => {
                     const checked = fAssignees.includes(p.id);
                     return (
-                      <label key={p.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+                      <label key={p.id} className="small" style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 0" }}>
                         <input
                           type="checkbox"
                           checked={checked}
                           onChange={(e) => {
-                            if (e.target.checked) setFAssignees((prev) => [...prev, p.id]);
-                            else setFAssignees((prev) => prev.filter((x) => x !== p.id));
+                            if (e.target.checked) setFAssignees(prev => [...prev, p.id]);
+                            else setFAssignees(prev => prev.filter(x => x !== p.id));
                           }}
                         />
-                        <span>{p.name}</span>
+                        {p.name}
                       </label>
                     );
                   })}
                   {peopleForFormTeam.length === 0 && (
-                    <div style={{ fontSize: 13, color: "#777" }}>
-                      No members found for this team. Add/assign people in <a href="./admin/">Admin</a>.
+                    <div className="small">
+                      No members found for this team. Manage in <a href="./admin/">Admin</a>.
                     </div>
                   )}
                 </div>
 
-                <button onClick={checkConflicts} disabled={checkingConflicts}>
+                <button className="btn" onClick={checkConflicts} disabled={checkingConflicts}>
                   {checkingConflicts ? "Checking…" : "Check conflicts"}
                 </button>
 
                 {Object.keys(conflicts).length > 0 && (
-                  <div style={{ border: "1px solid #f3d1d1", background: "#fff5f5", borderRadius: 12, padding: 10 }}>
-                    <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>Potential conflicts</div>
+                  <div className="banner" style={{ borderColor: "rgba(255,77,109,0.35)" }}>
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Potential conflicts</div>
                     {Object.entries(conflicts).map(([pid, list]) => {
-                      const personName = peopleAll.find((p) => p.id === pid)?.name ?? pid;
+                      const personName = peopleAll.find(p => p.id === pid)?.name ?? pid;
                       return (
-                        <div key={pid} style={{ marginBottom: 8 }}>
-                          <div style={{ fontWeight: 900, fontSize: 13 }}>{personName}</div>
-                          <ul style={{ margin: "6px 0 0 18px", padding: 0, fontSize: 12, color: "#555" }}>
+                        <div key={pid} style={{ marginBottom: 10 }}>
+                          <div style={{ fontWeight: 900 }}>{personName}</div>
+                          <ul style={{ margin: "6px 0 0 18px", padding: 0 }}>
                             {(list as any[]).slice(0, 6).map((x, i) => (
-                              <li key={i}>
+                              <li key={i} className="small">
                                 {x.title} ({format(new Date(x.start_at), "dd MMM HH:mm")}–{format(new Date(x.end_at), "HH:mm")})
                               </li>
                             ))}
@@ -864,117 +685,46 @@ export default function Page() {
                         </div>
                       );
                     })}
-                    <div style={{ fontSize: 12, color: "#666" }}>Warning only (save is allowed).</div>
+                    <div className="small">Warning only — save is allowed.</div>
                   </div>
                 )}
 
-                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+                <div className="row" style={{ justifyContent: "flex-end" }}>
                   {editing && (
-                    <button onClick={() => onDelete(editing.id)} style={{ borderColor: "#f3d1d1" }}>
+                    <button className="btn danger" onClick={() => onDelete(editing.id)}>
                       Delete
                     </button>
                   )}
-                  <button onClick={() => setModalOpen(false)}>Cancel</button>
-                  <button onClick={onSave} style={{ fontWeight: 900 }}>
-                    Save
-                  </button>
+                  <button className="btn" onClick={() => setModalOpen(false)}>Cancel</button>
+                  <button className="btn primary" onClick={onSave}>Save</button>
+                </div>
+
+                <div className="small">
+                  If conflict checking shows nothing, your optional RPC <code>get_person_tasks_in_window</code> may not exist yet.
                 </div>
               </div>
             </div>
-
-            <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
-              If conflict checking shows nothing, your optional RPC <code>get_person_tasks_in_window</code> may not exist yet — app still works.
-            </div>
           </div>
-        </div>
-      )}
-    </main>
-  );
-}
-
-function TaskPill({ task, onClick, compact }: { task: any; onClick: () => void; compact?: boolean }) {
-  const start = new Date(task.start_at);
-  const end = new Date(task.end_at);
-
-  const who = (task.assignees ?? []).map((a: any) => a.name).join(", ");
-  const subtitle = compact
-    ? `${format(start, "HH:mm")}`
-    : `${format(start, "HH:mm")}–${format(end, "HH:mm")} • ${task.task_size} • ${task.status}`;
-
-  return (
-    <div
-      onClick={onClick}
-      style={{
-        border: "1px solid #ddd",
-        borderRadius: 12,
-        padding: compact ? "6px 8px" : "10px",
-        marginBottom: 8,
-        cursor: "pointer",
-      }}
-      title="Click to edit"
-    >
-      <div
-        style={{
-          fontWeight: 900,
-          fontSize: compact ? 12 : 13,
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-        }}
-      >
-        {task.title}
-      </div>
-      <div style={{ fontSize: 12, color: "#555", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-        {subtitle}
-      </div>
-      {!compact && (
-        <div style={{ fontSize: 12, color: "#555", marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {who || "Unassigned"}
         </div>
       )}
     </div>
   );
 }
 
-const cardCol: React.CSSProperties = {
-  border: "1px solid #eee",
-  borderRadius: 16,
-  padding: 8,
-  minHeight: 190,
-};
+function TaskCard({ task, onClick, compact }: { task: any; onClick: () => void; compact?: boolean }) {
+  const start = new Date(task.start_at);
+  const end = new Date(task.end_at);
+  const who = (task.assignees ?? []).map((a: any) => a.name).join(", ");
 
-const dayHeaderBtn: React.CSSProperties = {
-  fontWeight: 900,
-  border: "none",
-  background: "transparent",
-  padding: 0,
-  cursor: "pointer",
-};
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "10px 10px",
-  borderRadius: 12,
-  border: "1px solid #ddd",
-  outline: "none",
-  marginTop: 6,
-  fontSize: 14,
-};
-
-const modalBackdrop: React.CSSProperties = {
-  position: "fixed",
-  inset: 0,
-  background: "rgba(0,0,0,0.35)",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  padding: 16,
-};
-
-const modalCard: React.CSSProperties = {
-  width: "min(980px, 100%)",
-  background: "white",
-  borderRadius: 18,
-  border: "1px solid #ddd",
-  padding: 14,
-};
+  return (
+    <div className="task" onClick={onClick} title="Click to edit">
+      <div className="taskTitle">{task.title}</div>
+      <div className="taskMeta">
+        {compact
+          ? `${format(start, "HH:mm")} • ${task.status}`
+          : `${format(start, "HH:mm")}–${format(end, "HH:mm")} • ${task.task_size} • ${task.status}`}
+      </div>
+      {!compact && <div className="taskMeta">{who || "Unassigned"}</div>}
+    </div>
+  );
+}

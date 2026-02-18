@@ -9,7 +9,7 @@ import {
   fetchTasksForTeam,
   fetchTeams,
   getAvailability
-} from "@/lib/api";
+} from "../lib/api";
 
 type TasksWithAssignees = any;
 
